@@ -32,6 +32,14 @@
 	#include <GLFW/glfw3native.h>
 #endif
 
+#if defined ARCH_WIN
+	// For MsgWaitForMultipleObjects/PeekMessage: pump the message queue while
+	// idle so the accessibility window (which shares this thread) stays
+	// responsive to screen-reader COM/MSAA queries. See Window::step().
+	#define WIN32_LEAN_AND_MEAN
+	#include <windows.h>
+#endif
+
 
 namespace rack {
 namespace window {
@@ -524,7 +532,36 @@ void Window::step() {
 	if (settings::frameRateLimit > 0) {
 		double remaining = getFrameDurationRemaining();
 		if (remaining > 0.0) {
+#if defined ARCH_WIN
+			// Don't sleep blindly: the Windows accessibility window shares this
+			// thread, and screen readers (NVDA) read its controls via COM/MSAA
+			// calls that can only be answered while we dispatch messages. A plain
+			// sleep here starves those calls until the next frame's
+			// glfwPollEvents(), causing ~1s of speech latency. Instead, wait on
+			// the message queue and drain it as messages arrive, then go back to
+			// waiting for the rest of the frame budget.
+			// GLFW callbacks may switch the Rack context, so save/restore it.
+			Context* idleContext = contextGet();
+			double deadline = system::getTime() + remaining;
+			for (;;) {
+				double left = deadline - system::getTime();
+				if (left <= 0.0)
+					break;
+				DWORD waitMs = (DWORD)(left * 1e3) + 1;
+				DWORD r = MsgWaitForMultipleObjects(0, NULL, FALSE, waitMs, QS_ALLINPUT);
+				if (r == WAIT_TIMEOUT)
+					break;
+				MSG msg;
+				while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+					TranslateMessage(&msg);
+					DispatchMessageW(&msg);
+				}
+			}
+			contextSet(idleContext);
+			glfwMakeContextCurrent(win);
+#else
 			system::sleep(remaining);
+#endif
 		}
 	}
 
