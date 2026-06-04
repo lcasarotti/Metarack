@@ -1,3 +1,4 @@
+#include <accessible/AccessibleWindow.hpp>
 #include <common.hpp>
 #include <random.hpp>
 #include <asset.hpp>
@@ -262,6 +263,16 @@ int main(int argc, char* argv[]) {
 
 	APP->engine->startFallbackThread();
 
+	// Create accessible window after patch load so refreshRackView() sees the
+	// already-populated rack instead of an empty one.
+#if defined ARCH_WIN
+	rack::accessible::AccessibleWindow* accessibleWindow = nullptr;
+	if (!settings::headless) {
+		INFO("Creating accessible window");
+		accessibleWindow = rack::accessible::AccessibleWindow::create();
+	}
+#endif
+
 	// Run context
 	if (settings::headless) {
 		printf("Press enter to exit.\n");
@@ -275,6 +286,11 @@ int main(int argc, char* argv[]) {
 		INFO("Running window");
 		APP->window->run();
 		INFO("Stopped window");
+
+#if defined ARCH_WIN
+		delete accessibleWindow;
+		accessibleWindow = nullptr;
+#endif
 
 		// INFO("Destroying window");
 		// delete APP->window;
