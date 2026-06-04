@@ -1648,8 +1648,14 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 	else {
 		float cur  = pq->getValue();
 		float step = (pq->maxValue - pq->minValue) / 100.f;
-		if (GetKeyState(VK_SHIFT) & 0x8000)
-			step *= 10.f;
+		bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		bool shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+		if (ctrl && shift)
+			step *= (1.f / 100.f);  // Ctrl+Shift: very slow (mirrors Knob drag)
+		else if (ctrl)
+			step *= (1.f / 10.f);   // Ctrl: slow
+		else if (shift)
+			step *= 4.f;            // Shift: fast
 
 		float next = cur;
 		if (vk == VK_SPACE && pq->snapEnabled) {
@@ -1674,12 +1680,8 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 	}
 
 	// Update the visible value cell, then re-fire EVENT_OBJECT_FOCUS on the row so
-	// the screen reader re-reads it. This is verbose (it reads the whole row:
-	// parameter name + value) but it is reliably audible — a bare
-	// EVENT_OBJECT_VALUECHANGE is silent because a Win32 ListView item has no MSAA
-	// value of its own, and the NVDA controller client didn't work here either.
-	// TODO: find a way to announce ONLY the value (likely a UIA notification
-	// provider or a custom IAccessible proxy that exposes accValue).
+	// the screen reader re-reads it. Verbose (reads full row) but reliably audible.
+	// TODO: announce ONLY the value (UIA notification or custom IAccessible proxy).
 	std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
 	lvSetSubtext(listParam, row, 1, valW);
 	lvFocusRow(listParam, row);
