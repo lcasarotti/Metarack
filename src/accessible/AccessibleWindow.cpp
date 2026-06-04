@@ -7,6 +7,7 @@
 #include <commctrl.h>
 #include <windowsx.h>
 
+#include <common.hpp>
 #include <context.hpp>
 #include <app/Scene.hpp>
 #include <app/RackWidget.hpp>
@@ -109,6 +110,45 @@ static void lvFocusRow(HWND lv, int row, bool announce = true) {
 	ListView_EnsureVisible(lv, row, FALSE);
 	if (announce)
 		NotifyWinEvent(EVENT_OBJECT_FOCUS, lv, OBJID_CLIENT, row + 1);
+}
+
+// Position for a newly inserted module: just past the rightmost existing module,
+// so inserts land in a tidy left-to-right row. Shared by placeModule() and
+// pasteModuleFromClipboard().
+static math::Vec nextModulePos() {
+	auto existing = APP->scene->rack->getModules();
+	math::Vec pos = app::RACK_OFFSET;
+	for (app::ModuleWidget* e : existing) {
+		float right = e->box.pos.x + e->box.size.x;
+		if (right > pos.x)
+			pos.x = right + app::RACK_GRID_WIDTH;
+	}
+	pos.y = app::RACK_OFFSET.y;
+	return pos;
+}
+
+// Read the system clipboard as UTF-8. We talk to the Win32 clipboard directly
+// (rather than glfwGetClipboardString) to avoid pulling GLFW into this Win32
+// translation unit; it's the same underlying clipboard GLFW uses on Windows, so
+// it interoperates with the standard GUI's Ctrl+C/Ctrl+V.
+static std::string getClipboardTextUtf8() {
+	if (!IsClipboardFormatAvailable(CF_UNICODETEXT))
+		return {};
+	if (!OpenClipboard(nullptr))
+		return {};
+	std::string out;
+	if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+		if (const wchar_t* w = (const wchar_t*)GlobalLock(h)) {
+			int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+			if (n > 1) {
+				out.resize(n - 1);
+				WideCharToMultiByte(CP_UTF8, 0, w, -1, &out[0], n, nullptr, nullptr);
+			}
+			GlobalUnlock(h);
+		}
+	}
+	CloseClipboard();
+	return out;
 }
 
 // ── create / destroy ─────────────────────────────────────────────────────────
@@ -747,17 +787,7 @@ void AccessibleWindow::placeModule(plugin::Model* model) {
 		return;
 	}
 
-	// Target position: just to the right of the last module
-	auto existing = APP->scene->rack->getModules();
-	math::Vec pos = app::RACK_OFFSET;
-	for (app::ModuleWidget* e : existing) {
-		float right = e->box.pos.x + e->box.size.x;
-		if (right > pos.x)
-			pos.x = right + app::RACK_GRID_WIDTH;
-	}
-	pos.y = app::RACK_OFFSET.y;
-
-	APP->scene->rack->setModulePosNearest(mw, pos);
+	APP->scene->rack->setModulePosNearest(mw, nextModulePos());
 	APP->scene->rack->addModule(mw);
 
 	// Load the module's default preset, like the native browser does.
@@ -773,6 +803,126 @@ void AccessibleWindow::placeModule(plugin::Model* model) {
 	// user gets immediate confirmation of what was added.
 	refreshRackView(mw);
 	rackDirty = false;
+}
+
+void AccessibleWindow::pasteModuleFromClipboard() {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	std::string clip = getClipboardTextUtf8();
+	if (clip.empty()) {
+		setStatus("Appunti vuoti.");
+		return;
+	}
+
+	json_error_t error;
+	json_t* moduleJ = json_loads(clip.c_str(), 0, &error);
+	if (!moduleJ) {
+		setStatus("Appunti: nessun modulo valido.");
+		return;
+	}
+	DEFER({json_decref(moduleJ);});
+	engine::Module::jsonStripIds(moduleJ);
+
+	// Resolve the model from the JSON; bail with a message if the plugin/model
+	// isn't installed (modelFromJson throws in that case).
+	plugin::Model* model;
+	try {
+		model = plugin::modelFromJson(moduleJ);
+	}
+	catch (Exception& e) {
+		WARN("%s", e.what());
+		setStatus("Appunti: modulo non riconosciuto.");
+		return;
+	}
+
+	engine::Module* m = model->createModule();
+	if (!m)
+		return;
+	// Load state BEFORE adding to the engine: the module isn't live yet, so
+	// fromJson() needs no engine lock (same reasoning as cloneAction()).
+	try {
+		m->fromJson(moduleJ);
+	}
+	catch (Exception& e) {
+		WARN("%s", e.what());
+	}
+	APP->engine->addModule(m);
+
+	app::ModuleWidget* mw = model->createModuleWidget(m);
+	if (!mw) {
+		APP->engine->removeModule(m);
+		delete m;
+		return;
+	}
+
+	APP->scene->rack->setModulePosNearest(mw, nextModulePos());
+	APP->scene->rack->addModule(mw);
+
+	history::ModuleAdd* ha = new history::ModuleAdd;
+	ha->setModule(mw);
+	APP->history->push(ha);
+
+	setStatus("Modulo \"" + model->name + "\" incollato.");
+	refreshRackView(mw);
+	rackDirty = false;
+}
+
+// Ctrl+C / Ctrl+V / Ctrl+D (+Shift) on the focused RACK row. Like the context
+// menu, mutations are deferred via pushCommand() so they run at the safe point
+// in drainCommands() rather than during message reentrancy.
+void AccessibleWindow::handleRackCtrlKey(WPARAM vk, bool shift) {
+	int row = lvFocused(listRack);
+	if (row < 0)
+		return;
+	LPARAM lp = lvGetParam(listRack, row);
+
+	// Free slot ([ Slot libero ], lParam == 0): only paste-as-new applies here,
+	// mirroring Ctrl+V over empty rack space in the standard GUI.
+	if (lp == 0) {
+		if (vk == 'V')
+			pushCommand([this]() {
+			pasteModuleFromClipboard();
+		});
+		return;
+	}
+
+	auto* mw = reinterpret_cast<app::ModuleWidget*>(lp);
+	std::string sname = mw->model ? mw->model->name : "?";
+
+	switch (vk) {
+		case 'C':
+			// Copy the focused module's preset to the clipboard.
+			pushCommand([this, mw, sname]() {
+				mw->copyClipboard();
+				setStatus("Modulo \"" + sname + "\" copiato.");
+			});
+			break;
+
+		case 'V':
+			// Paste a copied preset onto the focused module, in place (same as
+			// Ctrl+V over an existing module in the standard GUI).
+			pushCommand([this, mw, sname]() {
+				if (mw->pasteClipboardAction())
+					setStatus("Preset incollato su \"" + sname + "\".");
+				else
+					setStatus("Impossibile incollare il preset.");
+			});
+			break;
+
+		case 'D':
+			// Duplicate; Shift keeps the cables. Refresh the list afterwards so the
+			// clone is visible (see the matching context-menu actions).
+			pushCommand([this, mw, sname, shift]() {
+				mw->cloneAction(shift);
+				refreshRackView();
+				rackDirty = false;
+				setStatus(shift
+				          ? "Modulo \"" + sname + "\" duplicato (con cavi)."
+				          : "Modulo \"" + sname + "\" duplicato.");
+			});
+			break;
+	}
 }
 
 void AccessibleWindow::handleRackKey(WPARAM vk) {
@@ -1091,6 +1241,19 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 	}
 
 	if (msg == WM_KEYDOWN) {
+		bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+		// Ctrl-based clipboard / duplicate shortcuts, only in the RACK list.
+		// Mirrors the standard GUI: Ctrl+C copy, Ctrl+V paste, Ctrl+D duplicate,
+		// Ctrl+Shift+D duplicate with cables. Without Ctrl these letters fall
+		// through to the ListView for type-ahead search.
+		if (ctrl && self->currentView == RACK &&
+		    (wp == 'C' || wp == 'V' || wp == 'D')) {
+			self->handleRackCtrlKey(wp, shift);
+			return 0;
+		}
+
 		switch (wp) {
 
 			// Global view shortcuts
