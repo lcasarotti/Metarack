@@ -1,0 +1,1031 @@
+#include <accessible/AccessibleWindow.hpp>
+
+#if defined ARCH_WIN
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <commctrl.h>
+#include <windowsx.h>
+
+#include <context.hpp>
+#include <app/Scene.hpp>
+#include <app/RackWidget.hpp>
+#include <app/ModuleWidget.hpp>
+#include <app/CableWidget.hpp>
+#include <app/PortWidget.hpp>
+#include <app/common.hpp>
+#include <plugin.hpp>
+#include <plugin/Plugin.hpp>
+#include <plugin/Model.hpp>
+#include <engine/Engine.hpp>
+#include <engine/Module.hpp>
+#include <engine/Cable.hpp>
+#include <engine/Port.hpp>
+#include <engine/ParamQuantity.hpp>
+#include <engine/PortInfo.hpp>
+#include <history.hpp>
+#include <math.hpp>
+#include <system.hpp>
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+using namespace rack;
+
+namespace rack {
+namespace accessible {
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+static const UINT_PTR TIMER_ID = 1;
+static const UINT     TIMER_MS = 100;
+static const wchar_t* WND_CLASS = L"RackAccessibleWnd";
+
+static const int ID_RACK    = 101;
+static const int ID_LIBRARY = 102;
+static const int ID_PARAM   = 103;
+static const int ID_OUTPUT  = 104;
+static const int ID_INPUT   = 105;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+static std::wstring toWide(const std::string& s) {
+	if (s.empty())
+		return {};
+	int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+	std::wstring w(n - 1, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
+	return w;
+}
+
+static void lvAddColumn(HWND lv, int col, const wchar_t* label, int width) {
+	LVCOLUMNW c = {};
+	c.mask    = LVCF_TEXT | LVCF_WIDTH;
+	c.cx      = width;
+	c.pszText = const_cast<wchar_t*>(label);
+	ListView_InsertColumn(lv, col, &c);
+}
+
+// Insert a new row with text in column 0; lParam is caller data.
+static int lvAppendRow(HWND lv, const std::wstring& col0text, LPARAM lp) {
+	LVITEMW item = {};
+	item.mask    = LVIF_TEXT | LVIF_PARAM;
+	item.iItem   = ListView_GetItemCount(lv);
+	item.lParam  = lp;
+	item.pszText = const_cast<wchar_t*>(col0text.c_str());
+	return ListView_InsertItem(lv, &item);
+}
+
+static void lvSetSubtext(HWND lv, int row, int col, const std::wstring& text) {
+	LVITEMW item = {};
+	item.mask     = LVIF_TEXT;
+	item.iItem    = row;
+	item.iSubItem = col;
+	item.pszText  = const_cast<wchar_t*>(text.c_str());
+	ListView_SetItem(lv, &item);
+}
+
+static LPARAM lvGetParam(HWND lv, int row) {
+	LVITEMW item = {};
+	item.mask  = LVIF_PARAM;
+	item.iItem = row;
+	ListView_GetItem(lv, &item);
+	return item.lParam;
+}
+
+static int lvFocused(HWND lv) {
+	return ListView_GetNextItem(lv, -1, LVNI_FOCUSED);
+}
+
+// Focus + select a row and make a screen reader (re)announce it. Re-firing
+// EVENT_OBJECT_FOCUS forces NVDA to read the whole row again, including the
+// value column — used both when entering a list and after editing a value.
+static void lvFocusRow(HWND lv, int row, bool announce = true) {
+	if (row < 0 || row >= ListView_GetItemCount(lv))
+		return;
+	ListView_SetItemState(lv, row, LVIS_FOCUSED | LVIS_SELECTED, LVIS_FOCUSED | LVIS_SELECTED);
+	ListView_EnsureVisible(lv, row, FALSE);
+	if (announce)
+		NotifyWinEvent(EVENT_OBJECT_FOCUS, lv, OBJID_CLIENT, row + 1);
+}
+
+// ── create / destroy ─────────────────────────────────────────────────────────
+
+AccessibleWindow* AccessibleWindow::instance = nullptr;
+
+AccessibleWindow* AccessibleWindow::create() {
+	HINSTANCE hInst = GetModuleHandleW(nullptr);
+
+	INITCOMMONCONTROLSEX icc = {};
+	icc.dwSize = sizeof(icc);
+	icc.dwICC  = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES;
+	InitCommonControlsEx(&icc);
+
+	WNDCLASSEXW wc  = {};
+	wc.cbSize        = sizeof(wc);
+	wc.style         = CS_HREDRAW | CS_VREDRAW;
+	wc.lpfnWndProc   = WndProc;
+	wc.hInstance     = hInst;
+	wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	wc.lpszClassName = WND_CLASS;
+	RegisterClassExW(&wc);
+
+	AccessibleWindow* self = new AccessibleWindow;
+	instance = self;
+
+	HWND hwnd = CreateWindowExW(
+	              0,
+	              WND_CLASS,
+	              L"VCV Rack — Interfaccia accessibile",
+	              WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+	              CW_USEDEFAULT, CW_USEDEFAULT, 580, 720,
+	              nullptr, nullptr, hInst, self);
+
+	if (!hwnd) {
+		instance = nullptr;
+		delete self;
+		return nullptr;
+	}
+	return self;
+}
+
+AccessibleWindow::~AccessibleWindow() {
+	if (hwnd) {
+		KillTimer(hwnd, TIMER_ID);
+		DestroyWindow(hwnd);
+		hwnd = nullptr;
+	}
+	if (instance == this)
+		instance = nullptr;
+}
+
+// ── Deferred command queue ─────────────────────────────────────────────────────
+
+void AccessibleWindow::pushCommand(std::function<void()> fn) {
+	commandQueue.push_back(std::move(fn));
+}
+
+void AccessibleWindow::drainCommands() {
+	// Swap out the queue first: a command may push further commands, and we
+	// don't want to run those until the next drain (nor invalidate iterators).
+	std::vector<std::function<void()>> cmds;
+	cmds.swap(commandQueue);
+	for (auto& fn : cmds)
+		fn();
+}
+
+// ── WndProc ───────────────────────────────────────────────────────────────────
+
+LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+	AccessibleWindow* self = (AccessibleWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+	switch (msg) {
+		case WM_CREATE: {
+			auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+			self = static_cast<AccessibleWindow*>(cs->lpCreateParams);
+			self->hwnd = hwnd;
+			SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)self);
+			self->onCreate();
+			return 0;
+		}
+		case WM_ACTIVATE:
+			// Restore keyboard focus to the active control whenever the window
+			// is brought to front (e.g. via Alt+Tab). Without this, the window
+			// frame becomes active but no child control has focus, so NVDA and
+			// keyboard input both fail.
+			if (self && LOWORD(wp) != WA_INACTIVE) {
+				HWND views[] = { self->listRack, self->treeLibrary, self->listParam,
+				                 self->listOutput, self->listInput };
+				SetFocus(views[(int)self->currentView]);
+			}
+			return 0;
+		case WM_SIZE:
+			if (self)
+				self->onSize();
+			return 0;
+		case WM_TIMER:
+			if (self && wp == TIMER_ID)
+				self->onTimer();
+			return 0;
+		case WM_HOTKEY:
+			// Ctrl+Shift+A: bring accessibility window to front from any context
+			if (self && wp == 1) {
+				ShowWindow(hwnd, SW_RESTORE);
+				SetForegroundWindow(hwnd);
+				HWND views[] = { self->listRack, self->treeLibrary, self->listParam,
+				                 self->listOutput, self->listInput };
+				SetFocus(views[(int)self->currentView]);
+			}
+			return 0;
+		case WM_CLOSE:
+			ShowWindow(hwnd, SW_MINIMIZE);
+			return 0;
+		case WM_DESTROY:
+			UnregisterHotKey(hwnd, 1);
+			KillTimer(hwnd, TIMER_ID);
+			return 0;
+		case WM_NOTIFY:
+			return DefWindowProcW(hwnd, msg, wp, lp);
+	}
+	return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ── onCreate ─────────────────────────────────────────────────────────────────
+
+void AccessibleWindow::onCreate() {
+	HINSTANCE hInst = GetModuleHandleW(nullptr);
+	RECT rc;
+	GetClientRect(hwnd, &rc);
+	int w = rc.right;
+	int h = rc.bottom;
+
+	// Status bar (auto-sizes itself)
+	statusBar = CreateWindowExW(0, STATUSCLASSNAME, L"Pronto.",
+	                            WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+	                            0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)999, hInst, nullptr);
+	RECT sbRc;
+	SendMessageW(statusBar, WM_SIZE, 0, 0);
+	GetWindowRect(statusBar, &sbRc);
+	int sbH  = sbRc.bottom - sbRc.top;
+	int listH = h - sbH;
+
+	DWORD lvStyle = WS_CHILD | WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS;
+	DWORD lvEx    = LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES;
+
+	// Rack ListView
+	listRack = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	                           lvStyle | WS_VISIBLE,
+	                           0, 0, w, listH,
+	                           hwnd, (HMENU)(INT_PTR)ID_RACK, hInst, nullptr);
+	ListView_SetExtendedListViewStyle(listRack, lvEx);
+	lvAddColumn(listRack, 0, L"Modulo", 230);
+	lvAddColumn(listRack, 1, L"Manufacturer", 180);
+	lvAddColumn(listRack, 2, L"HP", 60);
+
+	// Library TreeView
+	treeLibrary = CreateWindowExW(0, WC_TREEVIEWW, L"",
+	                              WS_CHILD | WS_BORDER | WS_TABSTOP |
+	                              TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS | TVS_SHOWSELALWAYS,
+	                              0, 0, w, listH,
+	                              hwnd, (HMENU)(INT_PTR)ID_LIBRARY, hInst, nullptr);
+
+	// Param ListView
+	listParam = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	                            lvStyle,
+	                            0, 0, w, listH,
+	                            hwnd, (HMENU)(INT_PTR)ID_PARAM, hInst, nullptr);
+	ListView_SetExtendedListViewStyle(listParam, lvEx);
+	lvAddColumn(listParam, 0, L"Parametro", 250);
+	lvAddColumn(listParam, 1, L"Valore", 210);
+
+	// Output ListView
+	listOutput = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	                             lvStyle,
+	                             0, 0, w, listH,
+	                             hwnd, (HMENU)(INT_PTR)ID_OUTPUT, hInst, nullptr);
+	ListView_SetExtendedListViewStyle(listOutput, lvEx);
+	lvAddColumn(listOutput, 0, L"Output", 250);
+	lvAddColumn(listOutput, 1, L"Stato", 210);
+
+	// Input ListView
+	listInput = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	                            lvStyle,
+	                            0, 0, w, listH,
+	                            hwnd, (HMENU)(INT_PTR)ID_INPUT, hInst, nullptr);
+	ListView_SetExtendedListViewStyle(listInput, lvEx);
+	lvAddColumn(listInput, 0, L"Input", 250);
+	lvAddColumn(listInput, 1, L"Stato", 210);
+
+	// Subclass all controls for keyboard interception
+	SetWindowSubclass(listRack,    ChildSubclassProc, 0, (DWORD_PTR)this);
+	SetWindowSubclass(treeLibrary, ChildSubclassProc, 1, (DWORD_PTR)this);
+	SetWindowSubclass(listParam,   ChildSubclassProc, 2, (DWORD_PTR)this);
+	SetWindowSubclass(listOutput,  ChildSubclassProc, 3, (DWORD_PTR)this);
+	SetWindowSubclass(listInput,   ChildSubclassProc, 4, (DWORD_PTR)this);
+
+	SetTimer(hwnd, TIMER_ID, TIMER_MS, nullptr);
+
+	// Ctrl+Shift+A: global hotkey to bring this window to front from anywhere
+	RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_SHIFT, 'A');
+
+	// Initial population and focus
+	refreshRackView();
+	rackDirty = false;
+	SetForegroundWindow(hwnd);
+	SetFocus(listRack);
+}
+
+// ── Layout ───────────────────────────────────────────────────────────────────
+
+void AccessibleWindow::onSize() {
+	RECT rc;
+	GetClientRect(hwnd, &rc);
+	int w = rc.right;
+	int h = rc.bottom;
+
+	SendMessageW(statusBar, WM_SIZE, 0, 0);
+	RECT sbRc;
+	GetWindowRect(statusBar, &sbRc);
+	int sbH   = sbRc.bottom - sbRc.top;
+	int listH = h - sbH;
+
+	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput };
+	for (HWND c : ctrls)
+		SetWindowPos(c, nullptr, 0, 0, w, listH, SWP_NOZORDER | SWP_NOMOVE);
+}
+
+// ── Status bar ───────────────────────────────────────────────────────────────
+
+void AccessibleWindow::setStatus(const std::string& msg) {
+	SetWindowTextW(statusBar, toWide(msg).c_str());
+}
+
+// ── View switching ───────────────────────────────────────────────────────────
+
+void AccessibleWindow::switchView(View v) {
+	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput };
+	for (int i = 0; i < 5; i++)
+		ShowWindow(ctrls[i], (i == (int)v) ? SW_SHOW : SW_HIDE);
+	currentView = v;
+
+	switch (v) {
+		case RACK:
+			// Rebuild only when content has changed; avoids flooding NVDA with
+			// N×EVENT_OBJECT_CREATE on every R keypress.
+			if (rackDirty) {
+				refreshRackView();
+				rackDirty = false;
+			}
+			break;
+		case LIBRARY:
+			if (!libraryLoaded) {
+				refreshLibraryView();
+				libraryLoaded = true;
+			}
+			break;
+		case PARAM:
+			// Rebuild only when the target module changed.
+			if (currentModule != lastParamModule) {
+				repopulateParamView();
+				lastParamModule = currentModule;
+			}
+			break;
+		case OUTPUT:
+			refreshPortView(true);
+			break;
+		case INPUT:
+			refreshPortView(false);
+			break;
+	}
+
+	// In the item lists, land focus on the first row so a screen-reader user
+	// hears item 1 on entry and the first Down arrow moves to item 2 (the
+	// expected behaviour). Don't override an existing focus on revisits.
+	if (v == PARAM || v == OUTPUT || v == INPUT) {
+		HWND lv = ctrls[(int)v];
+		if (lvFocused(lv) < 0)
+			lvFocusRow(lv, 0, false);   // SetFocus below makes NVDA announce it
+	}
+
+	SetFocus(ctrls[(int)v]);
+}
+
+// ── Timer ────────────────────────────────────────────────────────────────────
+
+void AccessibleWindow::onTimer() {
+	refreshCurrentView();
+}
+
+void AccessibleWindow::refreshCurrentView() {
+	// Intentionally empty: updating all param rows every 100 ms fires
+	// one EVENT_OBJECT_NAMECHANGE per row per tick via LVM_SETITEM,
+	// which floods NVDA's event queue and causes 1-second+ speech latency.
+	// Values are refreshed on row focus change (WM_NOTIFY/LVN_ITEMCHANGED)
+	// and after explicit user edits (handleParamKey → lvSetSubtext).
+}
+
+// ── Rack view ────────────────────────────────────────────────────────────────
+
+void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule) {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+	HWND lv = listRack;
+
+	// Decide which row to focus after the rebuild. By default we restore the
+	// previously-focused module; callers can instead request a specific module
+	// (e.g. the one just inserted) via focusModule.
+	int    prevFocusedRow = lvFocused(lv);
+	LPARAM prevFocusedLp  = focusModule
+	                        ? (LPARAM)focusModule
+	                        : ((prevFocusedRow >= 0) ? lvGetParam(lv, prevFocusedRow) : -1);
+
+	ListView_DeleteAllItems(lv);
+
+	auto modules = APP->scene->rack->getModules();
+	std::sort(modules.begin(), modules.end(), [](app::ModuleWidget * a, app::ModuleWidget * b) {
+		return a->box.pos.x < b->box.pos.x;
+	});
+
+	for (app::ModuleWidget* mw : modules) {
+		if (!mw || !mw->model)
+			continue;
+		int  hp    = (int)(mw->box.size.x / app::RACK_GRID_WIDTH + 0.5f);
+		int  row   = lvAppendRow(lv, toWide(mw->model->name), (LPARAM)mw);
+		std::wstring brand = mw->model->plugin ? toWide(mw->model->plugin->getBrand()) : L"";
+		lvSetSubtext(lv, row, 1, brand);
+		lvSetSubtext(lv, row, 2, std::to_wstring(hp) + L" HP");
+	}
+
+	// Free slot (lParam == 0 marks it)
+	int freeRow = lvAppendRow(lv, L"[ Slot libero ]", 0);
+	lvSetSubtext(lv, freeRow, 1, L"");
+	lvSetSubtext(lv, freeRow, 2, L"—");
+
+	// Restore focus: find the item with the same lParam, or default to row 0
+	int count = ListView_GetItemCount(lv);
+	int restoreTo = 0;
+	if (prevFocusedLp != -1) {
+		for (int i = 0; i < count; i++) {
+			if (lvGetParam(lv, i) == prevFocusedLp) {
+				restoreTo = i;
+				break;
+			}
+		}
+	}
+	if (count > 0) {
+		ListView_SetItemState(lv, restoreTo, LVIS_FOCUSED | LVIS_SELECTED, LVIS_FOCUSED | LVIS_SELECTED);
+		ListView_EnsureVisible(lv, restoreTo, FALSE);
+	}
+}
+
+// ── Library view ─────────────────────────────────────────────────────────────
+
+void AccessibleWindow::refreshLibraryView() {
+	TreeView_DeleteAllItems(treeLibrary);
+
+	for (plugin::Plugin* plug : plugin::plugins) {
+		if (!plug)
+			continue;
+		std::wstring brand = toWide(plug->getBrand());
+
+		TVINSERTSTRUCTW tvis     = {};
+		tvis.hParent             = TVI_ROOT;
+		tvis.hInsertAfter        = TVI_LAST;
+		tvis.item.mask           = TVIF_TEXT | TVIF_PARAM;
+		tvis.item.pszText        = const_cast<wchar_t*>(brand.data());
+		tvis.item.lParam         = 0;
+		HTREEITEM hPlug = TreeView_InsertItem(treeLibrary, &tvis);
+
+		for (plugin::Model* model : plug->models) {
+			if (!model || model->hidden)
+				continue;
+			std::wstring name = toWide(model->name);
+
+			TVINSERTSTRUCTW mvis  = {};
+			mvis.hParent          = hPlug;
+			mvis.hInsertAfter     = TVI_LAST;
+			mvis.item.mask        = TVIF_TEXT | TVIF_PARAM;
+			mvis.item.pszText     = const_cast<wchar_t*>(name.data());
+			mvis.item.lParam      = (LPARAM)model;
+			TreeView_InsertItem(treeLibrary, &mvis);
+		}
+	}
+}
+
+// ── Param view ───────────────────────────────────────────────────────────────
+
+void AccessibleWindow::repopulateParamView() {
+	ListView_DeleteAllItems(listParam);
+	if (!currentModule)
+		return;
+
+	for (int i = 0; i < currentModule->getNumParams(); i++) {
+		engine::ParamQuantity* pq = currentModule->getParamQuantity(i);
+		if (!pq || pq->name.empty())
+			continue;
+		int row = lvAppendRow(listParam, toWide(pq->name), (LPARAM)i);
+		lvSetSubtext(listParam, row, 1, toWide(pq->getDisplayValueString() + pq->getUnit()));
+	}
+}
+
+void AccessibleWindow::refreshParamValues() {
+	if (!currentModule)
+		return;
+	int row = 0;
+	for (int i = 0; i < currentModule->getNumParams(); i++) {
+		engine::ParamQuantity* pq = currentModule->getParamQuantity(i);
+		if (!pq || pq->name.empty())
+			continue;
+		lvSetSubtext(listParam, row, 1, toWide(pq->getDisplayValueString() + pq->getUnit()));
+		row++;
+	}
+}
+
+// ── Port view ────────────────────────────────────────────────────────────────
+
+void AccessibleWindow::refreshPortView(bool isOutput) {
+	if (!currentModule || !APP || !APP->scene || !APP->scene->rack)
+		return;
+	HWND lv = isOutput ? listOutput : listInput;
+	ListView_DeleteAllItems(lv);
+
+	app::RackWidget* rack = APP->scene->rack;
+	app::ModuleWidget* mw = rack->getModule(currentModule->id);
+
+	int numPorts = isOutput ? currentModule->getNumOutputs() : currentModule->getNumInputs();
+	for (int i = 0; i < numPorts; i++) {
+		engine::PortInfo* info = isOutput
+		                         ? currentModule->getOutputInfo(i)
+		                         : currentModule->getInputInfo(i);
+		std::string portName = info ? info->getName() : ("Porta " + std::to_string(i));
+
+		// Determine cable status
+		std::string status = "libero";
+		if (mw) {
+			app::PortWidget* pw = isOutput ? mw->getOutput(i) : mw->getInput(i);
+			if (pw) {
+				auto cables = rack->getCompleteCablesOnPort(pw);
+				if (!cables.empty()) {
+					app::CableWidget* cw = cables[0];
+					app::PortWidget* remote = isOutput ? cw->inputPort : cw->outputPort;
+					if (remote) {
+						engine::Module* remMod = remote->module;
+						if (remMod && remMod->model)
+							status = "→ " + remMod->model->name;
+						else
+							status = "connesso";
+					}
+				}
+			}
+		}
+
+		int row = lvAppendRow(lv, toWide(portName), (LPARAM)i);
+		lvSetSubtext(lv, row, 1, toWide(status));
+	}
+}
+
+// ── Actions: rack ─────────────────────────────────────────────────────────────
+
+void AccessibleWindow::placeModule(plugin::Model* model) {
+	if (!model || !APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	engine::Module* m = model->createModule();
+	if (!m)
+		return;
+	app::ModuleWidget* mw = model->createModuleWidget(m);
+	if (!mw) {
+		delete m;
+		return;
+	}
+
+	// Target position: just to the right of the last module
+	auto existing = APP->scene->rack->getModules();
+	math::Vec pos = app::RACK_OFFSET;
+	for (app::ModuleWidget* e : existing) {
+		float right = e->box.pos.x + e->box.size.x;
+		if (right > pos.x)
+			pos.x = right + app::RACK_GRID_WIDTH;
+	}
+	pos.y = app::RACK_OFFSET.y;
+
+	APP->scene->rack->setModulePosNearest(mw, pos);
+	APP->scene->rack->addModule(mw);
+
+	setStatus("Modulo \"" + model->name + "\" aggiunto.");
+	// Keep focus on the inserted module's row (not on the new free slot) so the
+	// user gets immediate confirmation of what was added.
+	refreshRackView(mw);
+	rackDirty = false;
+}
+
+void AccessibleWindow::handleRackKey(WPARAM vk) {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	if (vk == VK_RETURN) {
+		int row = lvFocused(listRack);
+		if (row < 0)
+			return;
+		LPARAM lp = lvGetParam(listRack, row);
+
+		if (lp == 0) {
+			// Free slot: place model if one is queued, otherwise open the library
+			// (mirrors the standard GUI's double-click-on-empty-slot behaviour).
+			if (selectedModel) {
+				plugin::Model* model = selectedModel;
+				selectedModel = nullptr;
+				// Defer the widget-tree mutation to a safe point (see drainCommands).
+				pushCommand([this, model]() {
+					placeModule(model);
+				});
+			}
+			else {
+				switchView(LIBRARY);
+			}
+		}
+		else {
+			currentModule = reinterpret_cast<app::ModuleWidget*>(lp)->module;
+			switchView(PARAM);
+		}
+	}
+	else if (vk == VK_DELETE || vk == VK_BACK) {
+		int row = lvFocused(listRack);
+		if (row < 0)
+			return;
+		LPARAM lp = lvGetParam(listRack, row);
+		if (lp == 0)
+			return;
+
+		auto* mw = reinterpret_cast<app::ModuleWidget*>(lp);
+		std::string  sname = mw->model ? mw->model->name : "?";
+		std::wstring name  = toWide(sname);
+		if (MessageBoxW(hwnd,
+		                (L"Rimuovere \"" + name + L"\"?").c_str(),
+		                L"Conferma", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+			// Defer the deletion: removeAction() deletes the widget and its
+			// OpenGL framebuffer, which is unsafe from the message-pump
+			// reentrancy point this handler can run in. drainCommands() runs it
+			// from the main loop right after glfwPollEvents() instead.
+			pushCommand([this, mw, sname]() {
+				engine::Module* mod = mw->module;
+				mw->removeAction();
+				if (currentModule == mod) {
+					currentModule   = nullptr;
+					lastParamModule = nullptr;
+				}
+				refreshRackView();
+				rackDirty = false;
+				setStatus("Modulo \"" + sname + "\" rimosso.");
+			});
+		}
+	}
+	else if (vk == 'P' || vk == 'O' || vk == 'I') {
+		int row = lvFocused(listRack);
+		if (row < 0)
+			return;
+		LPARAM lp = lvGetParam(listRack, row);
+		if (lp == 0)
+			return;
+		currentModule = reinterpret_cast<app::ModuleWidget*>(lp)->module;
+		if (vk == 'P')
+			switchView(PARAM);
+		else if (vk == 'O')
+			switchView(OUTPUT);
+		else
+			switchView(INPUT);
+	}
+}
+
+// ── Actions: library ─────────────────────────────────────────────────────────
+
+void AccessibleWindow::handleLibraryEnter() {
+	HTREEITEM sel = TreeView_GetSelection(treeLibrary);
+	if (!sel)
+		return;
+
+	TVITEMW tvi   = {};
+	tvi.mask      = TVIF_PARAM | TVIF_HANDLE;
+	tvi.hItem     = sel;
+	TreeView_GetItem(treeLibrary, &tvi);
+
+	if (tvi.lParam == 0) {
+		// Manufacturer node: expand/collapse
+		TreeView_Expand(treeLibrary, sel, TVE_TOGGLE);
+		return;
+	}
+
+	selectedModel = reinterpret_cast<plugin::Model*>(tvi.lParam);
+	switchView(RACK);
+	setStatus("\"" + selectedModel->name + "\" selezionato — vai su [ Slot libero ] e premi Invio.");
+}
+
+// ── Actions: params ───────────────────────────────────────────────────────────
+
+void AccessibleWindow::handleParamKey(WPARAM vk) {
+	int row = lvFocused(listParam);
+	if (row < 0 || !currentModule)
+		return;
+
+	int paramId = (int)lvGetParam(listParam, row);
+	engine::ParamQuantity* pq = currentModule->getParamQuantity(paramId);
+	if (!pq)
+		return;
+
+	if (vk == VK_BACK) {
+		// Reset to default value (Ableton-style).
+		pq->reset();
+	}
+	else {
+		float cur  = pq->getValue();
+		float step = (pq->maxValue - pq->minValue) / 100.f;
+		if (GetKeyState(VK_SHIFT) & 0x8000)
+			step *= 10.f;
+
+		float next = cur;
+		if (vk == VK_SPACE && pq->snapEnabled) {
+			next = std::round(cur) + 1.f;
+			if (next > pq->maxValue)
+				next = pq->minValue;
+		}
+		else if (vk == VK_RIGHT) {
+			next = cur + step;
+		}
+		else if (vk == VK_LEFT) {
+			next = cur - step;
+		}
+		else {
+			return;
+		}
+
+		if (pq->snapEnabled)
+			next = std::round(next);
+		next = math::clamp(next, pq->minValue, pq->maxValue);
+		pq->setValue(next);
+	}
+
+	// Update the value cell and announce ONLY the new value (not the param name).
+	// lvSetSubtext fires EVENT_OBJECT_NAMECHANGE on the value subitem, which NVDA
+	// reads as the value; we deliberately do NOT re-fire focus on the whole row
+	// here (that would also re-read the parameter name, which is too verbose for
+	// a live value readout).
+	std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
+	lvSetSubtext(listParam, row, 1, valW);
+	NotifyWinEvent(EVENT_OBJECT_VALUECHANGE, listParam, OBJID_CLIENT, row + 1);
+}
+
+// ── Actions: ports / cables ──────────────────────────────────────────────────
+
+void AccessibleWindow::handlePortEnter(bool isOutput) {
+	HWND lv   = isOutput ? listOutput : listInput;
+	int  row  = lvFocused(lv);
+	if (row < 0 || !currentModule || !APP || !APP->engine || !APP->scene || !APP->scene->rack)
+		return;
+
+	int portId   = (int)lvGetParam(lv, row);
+	int portType = isOutput ? engine::Port::OUTPUT : engine::Port::INPUT;
+
+	if (!pendingCable.active) {
+		// Start connection
+		pendingCable.type   = portType;
+		pendingCable.module = currentModule;
+		pendingCable.portId = portId;
+		pendingCable.active = true;
+		engine::PortInfo* info = isOutput
+		                         ? currentModule->getOutputInfo(portId)
+		                         : currentModule->getInputInfo(portId);
+		std::string portName = info ? info->getName() : "";
+		std::string modName  = currentModule->model ? currentModule->model->name : "?";
+		setStatus("Connessione da \"" + portName + "\" di " + modName +
+		          " avviata. Seleziona porta di destinazione (Esc per annullare).");
+	}
+	else {
+		// Complete connection
+		if (pendingCable.type == portType) {
+			setStatus("Porta incompatibile: un output deve collegarsi a un input.");
+			return;
+		}
+
+		engine::Module* outMod; int outId;
+		engine::Module* inMod;  int inId;
+
+		if (pendingCable.type == engine::Port::OUTPUT) {
+			outMod = pendingCable.module; outId = pendingCable.portId;
+			inMod  = currentModule;       inId  = portId;
+		}
+		else {
+			inMod  = pendingCable.module; inId  = pendingCable.portId;
+			outMod = currentModule;       outId = portId;
+		}
+		pendingCable.active = false;
+		int destPortId = portId;   // the port the user is focused on right now
+
+		// Defer the widget-tree mutation to a safe point (see drainCommands).
+		pushCommand([this, outMod, outId, inMod, inId, isOutput, destPortId]() {
+			app::RackWidget* rack = APP->scene->rack;
+			// Build the cable exactly like Rack does natively: set the two
+			// PortWidgets on the CableWidget and let updateCable() create the
+			// engine cable, then addCable() so onAdd() registers the plug
+			// widgets in plugContainer. (Hand-rolling the engine::Cable and
+			// using setCable() skips the plugs, so the cable can't be found by
+			// getCompleteCablesOnPort() and is never disconnected when its
+			// module is removed — which fires an assert in Engine::removeModule
+			// and crashes, both on delete and at shutdown.)
+			app::ModuleWidget* outMw = rack->getModule(outMod->id);
+			app::ModuleWidget* inMw  = rack->getModule(inMod->id);
+			if (!outMw || !inMw)
+				return;
+			app::PortWidget* outPort = outMw->getOutput(outId);
+			app::PortWidget* inPort  = inMw->getInput(inId);
+			if (!outPort || !inPort)
+				return;
+
+			app::CableWidget* cw = new app::CableWidget;
+			cw->color      = rack->getNextCableColor();
+			cw->outputPort = outPort;
+			cw->inputPort  = inPort;
+			cw->updateCable();     // creates the engine cable from the two ports
+			rack->addCable(cw);    // onAdd() registers the plugs
+
+			std::string outName = outMod->model ? outMod->model->name : "?";
+			std::string inName  = inMod->model  ? inMod->model->name  : "?";
+			setStatus("Connesso: " + outName + " → " + inName + ".");
+
+			// Announce the connection: rebuild the port list and re-read the
+			// focused port row, whose status column now names the connected module.
+			refreshPortView(isOutput);
+			focusPortRow(isOutput, destPortId);
+		});
+	}
+}
+
+// Find the row for portId in the output/input list, focus it and let the screen
+// reader announce it (used after connecting/disconnecting a cable).
+void AccessibleWindow::focusPortRow(bool isOutput, int portId) {
+	HWND lv = isOutput ? listOutput : listInput;
+	int count = ListView_GetItemCount(lv);
+	for (int i = 0; i < count; i++) {
+		if ((int)lvGetParam(lv, i) == portId) {
+			lvFocusRow(lv, i);
+			return;
+		}
+	}
+}
+
+// ── Actions: disconnect cable ──────────────────────────────────────────────────
+
+void AccessibleWindow::handlePortDelete(bool isOutput) {
+	HWND lv  = isOutput ? listOutput : listInput;
+	int  row = lvFocused(lv);
+	if (row < 0 || !currentModule || !APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	int             portId = (int)lvGetParam(lv, row);
+	engine::Module* mod    = currentModule;
+
+	// Defer the widget-tree mutation to a safe point (see drainCommands).
+	pushCommand([this, mod, portId, isOutput]() {
+		app::RackWidget* rack = APP->scene->rack;
+		app::ModuleWidget* mw = rack->getModule(mod->id);
+		if (!mw)
+			return;
+		app::PortWidget* pw = isOutput ? mw->getOutput(portId) : mw->getInput(portId);
+		if (!pw)
+			return;
+
+		auto cables = rack->getCompleteCablesOnPort(pw);
+		if (cables.empty()) {
+			setStatus("Nessun cavo da scollegare su questa porta.");
+		}
+		else {
+			// Remove every cable on the port, with a single undo action.
+			history::ComplexAction* h = new history::ComplexAction;
+			h->name = "scollega cavo";
+			for (app::CableWidget* cw : cables) {
+				history::CableRemove* hr = new history::CableRemove;
+				hr->setCable(cw);
+				h->push(hr);
+				rack->removeCable(cw);
+				delete cw;
+			}
+			APP->history->push(h);
+			setStatus("Cavo scollegato.");
+		}
+
+		refreshPortView(isOutput);
+		focusPortRow(isOutput, portId);
+	});
+}
+
+// ── Subclass proc (keyboard hub) ─────────────────────────────────────────────
+
+LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
+  HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+  UINT_PTR /*uid*/, DWORD_PTR data) {
+	auto* self = reinterpret_cast<AccessibleWindow*>(data);
+
+	if (msg == WM_KEYDOWN) {
+		switch (wp) {
+
+			// Global view shortcuts
+			case 'R':
+				// If already in RACK, treat as explicit refresh request so
+				// external changes (module dragged via mouse) become visible.
+				if (self->currentView == RACK)
+					self->rackDirty = true;
+				self->switchView(RACK);
+				return 0;
+
+			case 'L':
+				self->switchView(LIBRARY);
+				return 0;
+
+			case VK_ESCAPE:
+				if (self->pendingCable.active) {
+					self->pendingCable.active = false;
+					self->setStatus("Connessione annullata.");
+				}
+				else if (self->currentView != RACK) {
+					self->switchView(RACK);
+				}
+				return 0;
+
+			// Context-specific shortcuts
+			case VK_RETURN:
+				switch (self->currentView) {
+					case RACK:    self->handleRackKey(VK_RETURN);      return 0;
+					case LIBRARY: self->handleLibraryEnter();           return 0;
+					case OUTPUT:  self->handlePortEnter(true);          return 0;
+					case INPUT:   self->handlePortEnter(false);         return 0;
+					default: break;
+				}
+				break;
+
+			case VK_DELETE:
+				if (self->currentView == RACK) {
+					self->handleRackKey(VK_DELETE);
+					return 0;
+				}
+				else if (self->currentView == OUTPUT) {
+					self->handlePortDelete(true);
+					return 0;
+				}
+				else if (self->currentView == INPUT) {
+					self->handlePortDelete(false);
+					return 0;
+				}
+				break;
+
+			case VK_BACK:
+				// Backspace: remove module in RACK, reset param to default in
+				// PARAM, disconnect cable in OUTPUT/INPUT (mirrors Del / the GUI).
+				if (self->currentView == RACK) {
+					self->handleRackKey(VK_BACK);
+					return 0;
+				}
+				else if (self->currentView == PARAM) {
+					self->handleParamKey(VK_BACK);
+					return 0;
+				}
+				else if (self->currentView == OUTPUT) {
+					self->handlePortDelete(true);
+					return 0;
+				}
+				else if (self->currentView == INPUT) {
+					self->handlePortDelete(false);
+					return 0;
+				}
+				break;
+
+			case 'P':
+				if (self->currentView == RACK) {
+					self->handleRackKey('P');
+					return 0;
+				}
+				break;
+			case 'O':
+				if (self->currentView == RACK) {
+					self->handleRackKey('O');
+					return 0;
+				}
+				break;
+			case 'I':
+				if (self->currentView == RACK) {
+					self->handleRackKey('I');
+					return 0;
+				}
+				break;
+
+			// Param value adjustment (Left/Right only; Up/Down navigate rows via default)
+			case VK_LEFT:
+			case VK_RIGHT:
+				if (self->currentView == PARAM) {
+					self->handleParamKey(wp);
+					return 0;
+				}
+				break;
+
+			case VK_SPACE:
+				if (self->currentView == PARAM) {
+					self->handleParamKey(VK_SPACE);
+					return 0;
+				}
+				break;
+
+			case VK_F1:
+				// Open the Rack manual in the system browser (same as F1 in the
+				// standard GUI).
+				system::openBrowser("https://vcvrack.com/manual/");
+				return 0;
+		}
+	}
+
+	return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+} // namespace accessible
+} // namespace rack
+
+#endif // ARCH_WIN
