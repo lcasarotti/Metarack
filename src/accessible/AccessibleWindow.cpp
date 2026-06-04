@@ -467,14 +467,27 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 	}});
 
 	items.push_back({L"Duplica (senza cavi)", [this, mw]() {
-		pushCommand([mw]() {
+		pushCommand([this, mw]() {
+			std::string sname = mw->model ? mw->model->name : "?";
 			mw->cloneAction(false);
+			// cloneAction() inserts a new ModuleWidget into the rack, but only the
+			// OpenGL view (redrawn every frame) reflects it automatically. The
+			// accessible RACK list is rebuilt lazily, so refresh it here — otherwise
+			// the duplicate stays invisible in the list until the next rebuild.
+			refreshRackView();
+			rackDirty = false;
+			setStatus("Modulo \"" + sname + "\" duplicato.");
 		});
 	}});
 
 	items.push_back({L"Duplica con cavi", [this, mw]() {
-		pushCommand([mw]() {
+		pushCommand([this, mw]() {
+			std::string sname = mw->model ? mw->model->name : "?";
 			mw->cloneAction(true);
+			// See note above: refresh the accessible RACK list so the clone appears.
+			refreshRackView();
+			rackDirty = false;
+			setStatus("Modulo \"" + sname + "\" duplicato (con cavi).");
 		});
 	}});
 
