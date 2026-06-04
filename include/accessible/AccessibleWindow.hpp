@@ -50,6 +50,9 @@ struct AccessibleWindow {
 	HWND listInput       = nullptr;
 	HWND listContextMenu = nullptr;
 	HWND statusBar       = nullptr;
+	HWND announcer          = nullptr;  // hidden STATIC used as live region for NVDA
+	std::wstring pendingAnnouncement;   // queued by setStatus, fired from onTimer (message-pump context)
+	int  announcerTicks     = 0;        // ticks until announcer text is cleared
 
 	View                  currentView      = RACK;
 	View                  previousView     = RACK;
@@ -60,6 +63,21 @@ struct AccessibleWindow {
 	bool                  libraryLoaded    = false;
 	bool                  rackDirty        = true;
 	std::vector<ContextMenuItem> contextItems;
+
+	// ── Native Win32 menu bar ──────────────────────────────────────────────────
+	// A real HMENU attached with SetMenu(). Windows handles Alt to enter the bar,
+	// left/right arrows between menus, up/down within a menu, Enter to activate and
+	// Esc to leave — and native menus have first-class MSAA/UIA support, so NVDA
+	// reads them (item name, role, checkbox state) with no custom code. Selections
+	// arrive as WM_COMMAND; check states are refreshed on WM_INITMENUPOPUP.
+	struct MenuCmd {
+		std::function<void()> action;
+		std::function<bool()> checked;   // optional: drives the item's checkmark
+	};
+	std::vector<MenuCmd> menuCmds;       // indexed by (command id - MENU_CMD_BASE)
+	HMENU menuBar      = nullptr;
+	HMENU popupRecent  = nullptr;        // rebuilt on open (File → Open Recent)
+	HMENU popupLibrary = nullptr;        // rebuilt on open (login state varies)
 
 	// Singleton instance so the main run loop can drain queued commands at a
 	// safe point. There is only ever one accessible window.
@@ -114,6 +132,19 @@ private:
 	void showContextMenu(std::vector<ContextMenuItem> items);
 	void buildModuleContextMenu(rack::app::ModuleWidget* mw);
 	void buildParamContextMenu(int paramId);
+
+	// ── Menu bar helpers ───────────────────────────────────────────────────────
+	void buildMenuBar();
+	// Append a command item to popup h; returns its command id so the caller can
+	// later toggle its checkmark. `checked` (optional) is queried on popup open.
+	UINT addMenuCmd(HMENU h, const std::wstring& label, std::function<void()> action,
+	                std::function<bool()> checked = nullptr, UINT flags = 0);
+	void refreshPopupChecks(HMENU popup);
+	void rebuildRecentPopup();
+	void rebuildLibraryPopup();
+	// Restore a clean RACK view after an op that may have changed the module set
+	// (patch load, undo/redo, paste); clears now-dangling module pointers.
+	void reloadRackAfterMutation();
 
 	void placeModule(rack::plugin::Model* model);
 	// Insert a new module from the JSON currently on the system clipboard,

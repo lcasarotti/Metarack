@@ -27,12 +27,62 @@
 #include <history.hpp>
 #include <math.hpp>
 #include <system.hpp>
+#include <patch.hpp>
+#include <settings.hpp>
+#include <library.hpp>
+#include <asset.hpp>
+#include <string.hpp>
+#include <window/Window.hpp>
+#include <app/RackScrollWidget.hpp>
+#include <app/TipWindow.hpp>
+#include <ui/common.hpp>
 
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <thread>
+#include <cmath>
 
 using namespace rack;
+
+// ── UIA notification (lazy-loaded, Win10+) ───────────────────────────────────
+// UiaRaiseNotificationEvent embeds the display text directly in the event so
+// the AT never needs a WM_GETTEXT callback. NotificationProcessing value 1
+// (ImportantMostRecent) tells NVDA to queue the announcement even while it is
+// already speaking, instead of dropping it as it does with plain WinEvents.
+// Loaded at runtime so the binary runs fine on pre-Win10 without uiautomation.h
+// or linking against UIAutomationCore.lib.
+typedef HRESULT(WINAPI *pfnUiaHostProviderFromHwnd_t)(HWND, IUnknown**);
+typedef HRESULT(WINAPI *pfnUiaRaiseNotificationEvent_t)(IUnknown*, int, int, BSTR, BSTR);
+typedef BSTR(WINAPI *pfnSysAllocString_t)(const OLECHAR*);
+typedef void(WINAPI *pfnSysFreeString_t)(BSTR);
+
+static pfnUiaHostProviderFromHwnd_t   s_UiaHostProvider  = nullptr;
+static pfnUiaRaiseNotificationEvent_t s_UiaRaiseNotify   = nullptr;
+static pfnSysAllocString_t            s_SysAllocString   = nullptr;
+static pfnSysFreeString_t             s_SysFreeString    = nullptr;
+
+// Suppress GCC's "cast between incompatible function types" on GetProcAddress returns.
+template<typename T> static T procAddr(HMODULE h, const char* name) {
+	return reinterpret_cast<T>(reinterpret_cast<void*>(GetProcAddress(h, name)));
+}
+
+static void uiaInit() {
+	static bool done = false;
+	if (done)
+		return;
+	done = true;
+	HMODULE ole = LoadLibraryW(L"oleaut32.dll");
+	if (ole) {
+		s_SysAllocString = procAddr<pfnSysAllocString_t>(ole, "SysAllocString");
+		s_SysFreeString  = procAddr<pfnSysFreeString_t> (ole, "SysFreeString");
+	}
+	HMODULE uia = LoadLibraryW(L"UIAutomationCore.dll");
+	if (!uia)
+		return;
+	s_UiaHostProvider = procAddr<pfnUiaHostProviderFromHwnd_t> (uia, "UiaHostProviderFromHwnd");
+	s_UiaRaiseNotify  = procAddr<pfnUiaRaiseNotificationEvent_t>(uia, "UiaRaiseNotificationEvent");
+}
 
 namespace rack {
 namespace accessible {
@@ -40,7 +90,7 @@ namespace accessible {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 static const UINT_PTR TIMER_ID = 1;
-static const UINT     TIMER_MS = 100;
+static const UINT     TIMER_MS = 200;
 static const wchar_t* WND_CLASS = L"RackAccessibleWnd";
 
 static const int ID_RACK         = 101;
@@ -49,6 +99,10 @@ static const int ID_PARAM        = 103;
 static const int ID_OUTPUT       = 104;
 static const int ID_INPUT        = 105;
 static const int ID_CONTEXT_MENU = 106;
+
+// Menu-bar command ids start here so they never collide with the control ids
+// above (101–106) or the status bar (999).
+static const UINT MENU_CMD_BASE = 2000;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -262,6 +316,31 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 				SetFocus(views[(int)self->currentView]);
 			}
 			return 0;
+		case WM_COMMAND:
+			// Menu-bar selection. The lambda decides whether to run inline or defer
+			// itself via pushCommand() (tree/engine/window mutations must defer).
+			if (self && HIWORD(wp) == 0) {
+				UINT id = LOWORD(wp);
+				if (id >= MENU_CMD_BASE && id < MENU_CMD_BASE + self->menuCmds.size()) {
+					auto& action = self->menuCmds[id - MENU_CMD_BASE].action;
+					if (action)
+						action();
+					return 0;
+				}
+			}
+			return DefWindowProcW(hwnd, msg, wp, lp);
+		case WM_INITMENUPOPUP:
+			// Fired once per popup just before it opens. Rebuild the popups whose
+			// structure varies, then refresh every item's checkmark from settings.
+			if (self) {
+				HMENU popup = (HMENU)wp;
+				if (popup == self->popupRecent)
+					self->rebuildRecentPopup();
+				else if (popup == self->popupLibrary)
+					self->rebuildLibraryPopup();
+				self->refreshPopupChecks(popup);
+			}
+			return 0;
 		case WM_CLOSE:
 			ShowWindow(hwnd, SW_MINIMIZE);
 			return 0;
@@ -279,6 +358,12 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
 void AccessibleWindow::onCreate() {
 	HINSTANCE hInst = GetModuleHandleW(nullptr);
+
+	// Attach the native menu bar first: SetMenu shrinks the client area, so the
+	// GetClientRect below already excludes the bar and the controls size correctly.
+	buildMenuBar();
+	SetMenu(hwnd, menuBar);
+
 	RECT rc;
 	GetClientRect(hwnd, &rc);
 	int w = rc.right;
@@ -288,6 +373,13 @@ void AccessibleWindow::onCreate() {
 	statusBar = CreateWindowExW(0, STATUSCLASSNAME, L"Pronto.",
 	                            WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
 	                            0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)999, hInst, nullptr);
+
+	// Off-screen 1×1 STATIC that acts as a live region: NVDA reliably fires on
+	// EVENT_OBJECT_NAMECHANGE for STATIC controls, so setStatus() updates this
+	// alongside the visible status bar to guarantee screen-reader announcement.
+	announcer = CreateWindowExW(0, L"STATIC", L"",
+	                            WS_CHILD | WS_VISIBLE,
+	                            -2, -2, 1, 1, hwnd, nullptr, hInst, nullptr);
 	RECT sbRc;
 	SendMessageW(statusBar, WM_SIZE, 0, 0);
 	GetWindowRect(statusBar, &sbRc);
@@ -372,6 +464,9 @@ void AccessibleWindow::onCreate() {
 // ── Layout ───────────────────────────────────────────────────────────────────
 
 void AccessibleWindow::onSize() {
+	// SetMenu() in onCreate can trigger WM_SIZE before the controls exist.
+	if (!statusBar || !listRack)
+		return;
 	RECT rc;
 	GetClientRect(hwnd, &rc);
 	int w = rc.right;
@@ -391,7 +486,13 @@ void AccessibleWindow::onSize() {
 // ── Status bar ───────────────────────────────────────────────────────────────
 
 void AccessibleWindow::setStatus(const std::string& msg) {
-	SetWindowTextW(statusBar, toWide(msg).c_str());
+	std::wstring w = toWide(msg);
+	SetWindowTextW(statusBar, w.c_str());
+	// Queue announcement for onTimer: NotifyWinEvent must fire from the message-pump
+	// thread context so NVDA can service its cross-process WM_GETTEXT response
+	// synchronously. Firing from drainCommands (main loop, outside the pump) leaves
+	// NVDA's SendMessage unanswered and the text unread.
+	pendingAnnouncement = std::move(w);
 }
 
 // ── View switching ───────────────────────────────────────────────────────────
@@ -450,6 +551,32 @@ void AccessibleWindow::switchView(View v) {
 // ── Timer ────────────────────────────────────────────────────────────────────
 
 void AccessibleWindow::onTimer() {
+	if (!pendingAnnouncement.empty()) {
+		uiaInit();
+		bool ok = false;
+		if (s_UiaHostProvider && s_UiaRaiseNotify && s_SysAllocString && s_SysFreeString) {
+			IUnknown* prov = nullptr;
+			if (SUCCEEDED(s_UiaHostProvider(hwnd, &prov)) && prov) {
+				BSTR bText = s_SysAllocString(pendingAnnouncement.c_str());
+				BSTR bAct  = s_SysAllocString(L"RackStatus");
+				// NotificationKind_ActionCompleted = 2
+				// NotificationProcessing_ImportantMostRecent = 1
+				ok = SUCCEEDED(s_UiaRaiseNotify(prov, 2, 1, bText, bAct));
+				s_SysFreeString(bText);
+				s_SysFreeString(bAct);
+				prov->Release();
+			}
+		}
+		if (!ok) {
+			// Fallback (pre-Win10): set text on the announcer STATIC + WinEvent.
+			SetWindowTextW(announcer, pendingAnnouncement.c_str());
+			NotifyWinEvent(EVENT_SYSTEM_ALERT, announcer, OBJID_CLIENT, 0);
+			announcerTicks = 3;
+		}
+		pendingAnnouncement.clear();
+	}
+	if (announcerTicks > 0 && --announcerTicks == 0)
+		SetWindowTextW(announcer, L"");
 	refreshCurrentView();
 }
 
@@ -598,6 +725,482 @@ void AccessibleWindow::handleContextMenuKey() {
 		default:
 			break;
 	}
+}
+
+// ── Menu bar ─────────────────────────────────────────────────────────────────
+
+UINT AccessibleWindow::addMenuCmd(HMENU h, const std::wstring& label,
+                                  std::function<void()> action,
+                                  std::function<bool()> checked, UINT flags) {
+	UINT id = MENU_CMD_BASE + (UINT)menuCmds.size();
+	menuCmds.push_back({std::move(action), std::move(checked)});
+	AppendMenuW(h, MF_STRING | flags, id, label.c_str());
+	return id;
+}
+
+// Set the checkmark of every command item in this popup from its `checked` getter.
+// Called on WM_INITMENUPOPUP, so toggles and radio presets always show live state.
+void AccessibleWindow::refreshPopupChecks(HMENU popup) {
+	int n = GetMenuItemCount(popup);
+	for (int i = 0; i < n; i++) {
+		UINT id = GetMenuItemID(popup, i);
+		// (UINT)-1 = submenu/separator; ids outside our range belong to nothing.
+		if (id < MENU_CMD_BASE || id >= MENU_CMD_BASE + menuCmds.size())
+			continue;
+		auto& chk = menuCmds[id - MENU_CMD_BASE].checked;
+		if (chk)
+			CheckMenuItem(popup, id, MF_BYCOMMAND | (chk() ? MF_CHECKED : MF_UNCHECKED));
+	}
+}
+
+void AccessibleWindow::reloadRackAfterMutation() {
+	// A patch load / undo / paste may have destroyed the modules these point at.
+	currentModule   = nullptr;
+	lastParamModule = nullptr;
+	pendingCable    = PendingCable();
+	rackDirty       = true;
+	switchView(RACK);   // refreshes (rackDirty) and lands focus on the RACK list
+}
+
+void AccessibleWindow::rebuildRecentPopup() {
+	while (DeleteMenu(popupRecent, 0, MF_BYPOSITION)) {}
+	if (settings::recentPatchPaths.empty()) {
+		AppendMenuW(popupRecent, MF_STRING | MF_GRAYED, 0, L"(nessuna patch recente)");
+		return;
+	}
+	for (const std::string& path : settings::recentPatchPaths) {
+		std::string p = path;
+		addMenuCmd(popupRecent, toWide(system::getStem(path)), [this, p]() {
+			pushCommand([this, p]() {
+				APP->patch->loadPathDialog(p);
+				reloadRackAfterMutation();
+			});
+		});
+	}
+}
+
+void AccessibleWindow::rebuildLibraryPopup() {
+	while (DeleteMenu(popupLibrary, 0, MF_BYPOSITION)) {}
+	if (!library::isLoggedIn()) {
+		addMenuCmd(popupLibrary, L"Registrati…", []() {
+			system::openBrowser("https://vcvrack.com/login");
+		});
+		// Login needs email/password text fields, which a native menu can't host;
+		// use the main GUI's Library menu to sign in.
+		AppendMenuW(popupLibrary, MF_STRING | MF_GRAYED, 0, L"(accedi dalla finestra principale)");
+		return;
+	}
+	addMenuCmd(popupLibrary, L"Esci", []() {
+		library::logOut();
+	});
+	addMenuCmd(popupLibrary, L"Account", []() {
+		system::openBrowser("https://vcvrack.com/account");
+	});
+	addMenuCmd(popupLibrary, L"Sfoglia libreria", []() {
+		system::openBrowser("https://library.vcvrack.com/");
+	});
+	addMenuCmd(popupLibrary, L"Aggiorna tutto", []() {
+		std::thread([]() {
+			library::syncUpdates();
+		}).detach();
+	});
+	// Refresh the update list in the background, like the native Library menu.
+	std::thread([]() {
+		library::checkUpdates();
+	}).detach();
+}
+
+void AccessibleWindow::buildMenuBar() {
+	menuBar = CreateMenu();
+
+	// Local helpers (capture `this` for addMenuCmd / pushCommand).
+	auto sub = [&](HMENU parent, const wchar_t* label) -> HMENU {
+		HMENU h = CreatePopupMenu();
+		AppendMenuW(parent, MF_POPUP, (UINT_PTR)h, label);
+		return h;
+	};
+	auto sep = [](HMENU h) {
+		AppendMenuW(h, MF_SEPARATOR, 0, nullptr);
+	};
+	// Radio preset over a float* setting.
+	auto fpreset = [&](HMENU h, const wchar_t* label, float* s, float v) {
+		addMenuCmd(h, label, [s, v]() {
+			*s = v;
+		}, [s, v]() {
+			return *s == v;
+		});
+	};
+
+	// ── File ──────────────────────────────────────────────────────────────────
+	HMENU file = sub(menuBar, L"&File");
+	addMenuCmd(file, L"Nuovo", [this]() {
+		pushCommand([this]() {
+			APP->patch->loadTemplateDialog();
+			reloadRackAfterMutation();
+		});
+	});
+	addMenuCmd(file, L"Apri…", [this]() {
+		pushCommand([this]() {
+			APP->patch->loadDialog();
+			reloadRackAfterMutation();
+		});
+	});
+	popupRecent = sub(file, L"Apri recenti");   // filled in WM_INITMENUPOPUP
+	addMenuCmd(file, L"Salva", [this]() {
+		pushCommand([]() {
+			APP->patch->saveDialog();
+		});
+	});
+	addMenuCmd(file, L"Salva come…", [this]() {
+		pushCommand([]() {
+			APP->patch->saveAsDialog();
+		});
+	});
+	addMenuCmd(file, L"Salva una copia…", [this]() {
+		pushCommand([]() {
+			APP->patch->saveAsDialog(false);
+		});
+	});
+	addMenuCmd(file, L"Ripristina", [this]() {
+		pushCommand([this]() {
+			APP->patch->revertDialog();
+			reloadRackAfterMutation();
+		});
+	});
+	addMenuCmd(file, L"Sovrascrivi template", [this]() {
+		pushCommand([]() {
+			APP->patch->saveTemplateDialog();
+		});
+	});
+	sep(file);
+	addMenuCmd(file, L"Importa selezione…", [this]() {
+		pushCommand([this]() {
+			APP->scene->rack->loadSelectionDialog();
+			reloadRackAfterMutation();
+		});
+	});
+	sep(file);
+	addMenuCmd(file, L"Esci", [this]() {
+		pushCommand([]() {
+			APP->window->close();
+		});
+	});
+
+	// ── Edit ──────────────────────────────────────────────────────────────────
+	HMENU edit = sub(menuBar, L"&Modifica");
+	addMenuCmd(edit, L"Annulla", [this]() {
+		pushCommand([this]() {
+			if (APP->history->canUndo()) {
+				APP->history->undo();
+				reloadRackAfterMutation();
+			}
+		});
+	});
+	addMenuCmd(edit, L"Ripristina", [this]() {
+		pushCommand([this]() {
+			if (APP->history->canRedo()) {
+				APP->history->redo();
+				reloadRackAfterMutation();
+			}
+		});
+	});
+	addMenuCmd(edit, L"Scollega tutti i cavi", [this]() {
+		pushCommand([]() {
+			APP->patch->disconnectDialog();
+		});
+	});
+	sep(edit);
+	addMenuCmd(edit, L"Seleziona tutto", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->selectAll();
+		});
+	});
+	addMenuCmd(edit, L"Deseleziona", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->deselectAll();
+		});
+	});
+	addMenuCmd(edit, L"Copia selezione", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->copyClipboardSelection();
+		});
+	});
+	addMenuCmd(edit, L"Incolla", [this]() {
+		pushCommand([this]() {
+			APP->scene->rack->pasteClipboardAction();
+			reloadRackAfterMutation();
+		});
+	});
+	addMenuCmd(edit, L"Salva selezione come…", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->saveSelectionDialog();
+		});
+	});
+	addMenuCmd(edit, L"Azzera selezione", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->resetSelectionAction();
+		});
+	});
+	addMenuCmd(edit, L"Randomizza selezione", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->randomizeSelectionAction();
+		});
+	});
+	addMenuCmd(edit, L"Scollega selezione", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->disconnectSelectionAction();
+		});
+	});
+	addMenuCmd(edit, L"Bypass selezione", [this]() {
+		pushCommand([]() {
+			APP->scene->rack->bypassSelectionAction(!APP->scene->rack->isSelectionBypassed());
+		});
+	}, []() {
+		return APP->scene->rack->isSelectionBypassed();
+	});
+
+	// ── View ──────────────────────────────────────────────────────────────────
+	HMENU view = sub(menuBar, L"&Vista");
+	addMenuCmd(view, L"Schermo intero", [this]() {
+		pushCommand([]() {
+			APP->window->setFullScreen(!APP->window->isFullScreen());
+		});
+	}, []() {
+		return APP->window->isFullScreen();
+	});
+
+	HMENU zoom = sub(view, L"Zoom");
+	struct {
+		const wchar_t* l;
+		float v;
+	} zooms[] = {
+		{L"25%", 0.25f}, {L"50%", 0.5f}, {L"100%", 1.0f}, {L"200%", 2.0f}, {L"400%", 4.0f}
+	};
+	for (auto& z : zooms) {
+		float v = z.v;
+		addMenuCmd(zoom, z.l, [this, v]() {
+			pushCommand([v]() {
+				APP->scene->rackScroll->setZoom(v);
+			});
+		}, [v]() {
+			return std::abs(APP->scene->rackScroll->getZoom() - v) < 0.01f;
+		});
+	}
+	addMenuCmd(view, L"Adatta allo schermo", [this]() {
+		pushCommand([]() {
+			APP->scene->rackScroll->zoomToModules();
+		});
+	});
+
+	HMENU theme = sub(view, L"Tema interfaccia");
+	struct {
+		const wchar_t* l;
+		const char* t;
+	} themes[] = {
+		{L"Scuro", "dark"}, {L"Chiaro", "light"}, {L"Scuro alto contrasto", "hcdark"}
+	};
+	for (auto& t : themes) {
+		const char* tn = t.t;
+		addMenuCmd(theme, t.l, [this, tn]() {
+			settings::uiTheme = tn;
+			pushCommand([]() {
+				ui::refreshTheme();
+			});
+		}, [tn]() {
+			return settings::uiTheme == tn;
+		});
+	}
+
+	HMENU pixel = sub(view, L"Rapporto pixel");
+	struct {
+		const wchar_t* l;
+		float v;
+	} pixels[] = {
+		{L"Auto", 0.f}, {L"100%", 1.f}, {L"150%", 1.5f}, {L"200%", 2.f}, {L"250%", 2.5f}, {L"300%", 3.f}
+	};
+	for (auto& p : pixels)
+		fpreset(pixel, p.l, &settings::pixelRatio, p.v);
+
+	HMENU wheel = sub(view, L"Rotellina del mouse");
+	addMenuCmd(wheel, L"Scorri", []() {
+		settings::mouseWheelZoom = false;
+	},
+	[]() {
+		return !settings::mouseWheelZoom;
+	});
+	addMenuCmd(wheel, L"Zoom", []() {
+		settings::mouseWheelZoom = true;
+	},
+	[]() {
+		return settings::mouseWheelZoom;
+	});
+
+	addMenuCmd(view, L"Mostra tooltip", []() {
+		settings::tooltips ^= true;
+	},
+	[]() {
+		return settings::tooltips;
+	});
+
+	HMENU opacity = sub(view, L"Opacità cavi");
+	for (int p = 0; p <= 100; p += 25)
+		fpreset(opacity, toWide(std::to_string(p) + "%").c_str(), &settings::cableOpacity, p / 100.f);
+	HMENU tension = sub(view, L"Tensione cavi");
+	for (int p = 0; p <= 100; p += 25)
+		fpreset(tension, toWide(std::to_string(p) + "%").c_str(), &settings::cableTension, p / 100.f);
+	HMENU room = sub(view, L"Luminosità stanza");
+	for (int p = 50; p <= 200; p += 25)
+		fpreset(room, toWide(std::to_string(p) + "%").c_str(), &settings::rackBrightness, p / 100.f);
+	HMENU halo = sub(view, L"Bagliore luci");
+	for (int p = 0; p <= 100; p += 25)
+		fpreset(halo, toWide(std::to_string(p) + "%").c_str(), &settings::haloBrightness, p / 100.f);
+
+	addMenuCmd(view, L"Blocca cursore", []() {
+		settings::allowCursorLock ^= true;
+	},
+	[]() {
+		return settings::allowCursorLock;
+	});
+
+	HMENU knob = sub(view, L"Modalità manopole");
+	struct {
+		const wchar_t* l;
+		int v;
+	} knobModes[] = {
+		{L"Lineare", settings::KNOB_MODE_LINEAR},
+		{L"Rotativa assoluta", settings::KNOB_MODE_ROTARY_ABSOLUTE},
+		{L"Rotativa relativa", settings::KNOB_MODE_ROTARY_RELATIVE},
+	};
+	for (auto& k : knobModes) {
+		int v = k.v;
+		addMenuCmd(knob, k.l, [v]() {
+			settings::knobMode = (settings::KnobMode)v;
+		},
+		[v]() {
+			return (int)settings::knobMode == v;
+		});
+	}
+	addMenuCmd(view, L"Scorrimento manopole", []() {
+		settings::knobScroll ^= true;
+	},
+	[]() {
+		return settings::knobScroll;
+	});
+	HMENU wheelSens = sub(view, L"Sensibilità rotellina");
+	struct {
+		const wchar_t* l;
+		float v;
+	} senss[] = {
+		{L"Bassa", 0.0005f}, {L"Media", 0.001f}, {L"Alta", 0.002f}
+	};
+	for (auto& s : senss)
+		fpreset(wheelSens, s.l, &settings::knobScrollSensitivity, s.v);
+
+	addMenuCmd(view, L"Blocca moduli", []() {
+		settings::lockModules ^= true;
+	},
+	[]() {
+		return settings::lockModules;
+	});
+	addMenuCmd(view, L"Comprimi moduli", []() {
+		settings::squeezeModules ^= true;
+	},
+	[]() {
+		return settings::squeezeModules;
+	});
+	addMenuCmd(view, L"Preferisci pannelli scuri", []() {
+		settings::preferDarkPanels ^= true;
+	},
+	[]() {
+		return settings::preferDarkPanels;
+	});
+
+	// ── Engine ────────────────────────────────────────────────────────────────
+	HMENU engine = sub(menuBar, L"M&otore");
+	addMenuCmd(engine, L"Indicatore CPU", []() {
+		settings::cpuMeter ^= true;
+	},
+	[]() {
+		return settings::cpuMeter;
+	});
+	HMENU srate = sub(engine, L"Frequenza di campionamento");
+	addMenuCmd(srate, L"Auto", []() {
+		settings::sampleRate = 0;
+	},
+	[]() {
+		return settings::sampleRate == 0;
+	});
+	float rates[] = {44100.f, 48000.f, 88200.f, 96000.f, 176400.f, 192000.f};
+	for (float r : rates) {
+		std::wstring label = toWide(string::f("%g kHz", r / 1000.f));
+		addMenuCmd(srate, label, [r]() {
+			settings::sampleRate = r;
+		},
+		[r]() {
+			return settings::sampleRate == r;
+		});
+	}
+	HMENU threads = sub(engine, L"Thread");
+	int cores = system::getLogicalCoreCount() / 2;
+	if (cores < 1)
+		cores = 1;
+	for (int i = 1; i <= 2 * cores; i++) {
+		addMenuCmd(threads, toWide(std::to_string(i)), [i]() {
+			settings::threadCount = i;
+		},
+		[i]() {
+			return settings::threadCount == i;
+		});
+	}
+
+	// ── Library ───────────────────────────────────────────────────────────────
+	popupLibrary = sub(menuBar, L"&Libreria");   // filled in WM_INITMENUPOPUP
+
+	// ── Help ──────────────────────────────────────────────────────────────────
+	HMENU help = sub(menuBar, L"&Aiuto");
+	HMENU lang = sub(help, L"Lingua");
+	for (const std::string& language : string::getLanguages()) {
+		std::string l = language;
+		addMenuCmd(lang, toWide(string::translate("language", l)), [this, l]() {
+			if (settings::language == l)
+				return;
+			settings::language = l;
+			if (MessageBoxW(hwnd, L"Riavviare ora per applicare la lingua?",
+			                L"Lingua", MB_YESNO | MB_ICONQUESTION) == IDYES)
+				pushCommand([]() {
+				APP->window->close();
+				settings::restart = true;
+			});
+		}, [l]() {
+			return settings::language == l;
+		});
+	}
+	addMenuCmd(help, L"Suggerimenti", [this]() {
+		pushCommand([]() {
+			APP->scene->addChild(app::tipWindowCreate());
+		});
+	});
+	addMenuCmd(help, L"Manuale", []() {
+		system::openBrowser("https://vcvrack.com/manual");
+	});
+	addMenuCmd(help, L"Supporto", []() {
+		system::openBrowser("https://vcvrack.com/support");
+	});
+	addMenuCmd(help, L"VCVRack.com", []() {
+		system::openBrowser("https://vcvrack.com/");
+	});
+	sep(help);
+	addMenuCmd(help, L"Cartella utente", []() {
+		system::openDirectory(asset::user(""));
+	});
+	addMenuCmd(help, L"Changelog", []() {
+		system::openBrowser("https://github.com/VCVRack/Rack/blob/v2/CHANGELOG.md");
+	});
+	addMenuCmd(help, L"Controlla aggiornamenti di Rack", []() {
+		std::thread([]() {
+			library::checkAppUpdate();
+		}).detach();
+	});
 }
 
 // ── Rack view ────────────────────────────────────────────────────────────────
@@ -1106,6 +1709,7 @@ void AccessibleWindow::handlePortEnter(bool isOutput) {
 		std::string modName  = currentModule->model ? currentModule->model->name : "?";
 		setStatus("Connessione da \"" + portName + "\" di " + modName +
 		          " avviata. Seleziona porta di destinazione (Esc per annullare).");
+		switchView(RACK);
 	}
 	else {
 		// Complete connection
@@ -1126,10 +1730,14 @@ void AccessibleWindow::handlePortEnter(bool isOutput) {
 			outMod = currentModule;       outId = portId;
 		}
 		pendingCable.active = false;
-		int destPortId = portId;   // the port the user is focused on right now
+
+		std::string outName = outMod->model ? outMod->model->name : "?";
+		std::string inName  = inMod->model  ? inMod->model->name  : "?";
+		setStatus("Connesso: " + outName + " → " + inName + ".");
+		switchView(RACK);
 
 		// Defer the widget-tree mutation to a safe point (see drainCommands).
-		pushCommand([this, outMod, outId, inMod, inId, isOutput, destPortId]() {
+		pushCommand([this, outMod, outId, inMod, inId]() {
 			app::RackWidget* rack = APP->scene->rack;
 			// Build the cable exactly like Rack does natively: set the two
 			// PortWidgets on the CableWidget and let updateCable() create the
@@ -1154,15 +1762,6 @@ void AccessibleWindow::handlePortEnter(bool isOutput) {
 			cw->inputPort  = inPort;
 			cw->updateCable();     // creates the engine cable from the two ports
 			rack->addCable(cw);    // onAdd() registers the plugs
-
-			std::string outName = outMod->model ? outMod->model->name : "?";
-			std::string inName  = inMod->model  ? inMod->model->name  : "?";
-			setStatus("Connesso: " + outName + " → " + inName + ".");
-
-			// Announce the connection: rebuild the port list and re-read the
-			// focused port row, whose status column now names the connected module.
-			refreshPortView(isOutput);
-			focusPortRow(isOutput, destPortId);
 		});
 	}
 }
