@@ -7,9 +7,9 @@
 #endif
 
 #if defined ARCH_WIN
-	#include <Windows.h>
-	#include <Shlobj.h>
-	#include <Shlwapi.h>
+	#include <windows.h>
+	#include <shlobj.h>
+	#include <shlwapi.h>
 #endif
 
 #if defined ARCH_LIN

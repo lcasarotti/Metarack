@@ -42,11 +42,12 @@ static const UINT_PTR TIMER_ID = 1;
 static const UINT     TIMER_MS = 100;
 static const wchar_t* WND_CLASS = L"RackAccessibleWnd";
 
-static const int ID_RACK    = 101;
-static const int ID_LIBRARY = 102;
-static const int ID_PARAM   = 103;
-static const int ID_OUTPUT  = 104;
-static const int ID_INPUT   = 105;
+static const int ID_RACK         = 101;
+static const int ID_LIBRARY      = 102;
+static const int ID_PARAM        = 103;
+static const int ID_OUTPUT       = 104;
+static const int ID_INPUT        = 105;
+static const int ID_CONTEXT_MENU = 106;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -197,7 +198,8 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 			// keyboard input both fail.
 			if (self && LOWORD(wp) != WA_INACTIVE) {
 				HWND views[] = { self->listRack, self->treeLibrary, self->listParam,
-				                 self->listOutput, self->listInput };
+				                 self->listOutput, self->listInput, self->listContextMenu
+				               };
 				SetFocus(views[(int)self->currentView]);
 			}
 			return 0;
@@ -215,7 +217,8 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 				ShowWindow(hwnd, SW_RESTORE);
 				SetForegroundWindow(hwnd);
 				HWND views[] = { self->listRack, self->treeLibrary, self->listParam,
-				                 self->listOutput, self->listInput };
+				                 self->listOutput, self->listInput, self->listContextMenu
+				               };
 				SetFocus(views[(int)self->currentView]);
 			}
 			return 0;
@@ -298,12 +301,21 @@ void AccessibleWindow::onCreate() {
 	lvAddColumn(listInput, 0, L"Input", 250);
 	lvAddColumn(listInput, 1, L"Stato", 210);
 
+	// Context-menu ListView (single column, initially hidden)
+	listContextMenu = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	                                  lvStyle,
+	                                  0, 0, w, listH,
+	                                  hwnd, (HMENU)(INT_PTR)ID_CONTEXT_MENU, hInst, nullptr);
+	ListView_SetExtendedListViewStyle(listContextMenu, lvEx);
+	lvAddColumn(listContextMenu, 0, L"Azione", w - 4);
+
 	// Subclass all controls for keyboard interception
-	SetWindowSubclass(listRack,    ChildSubclassProc, 0, (DWORD_PTR)this);
-	SetWindowSubclass(treeLibrary, ChildSubclassProc, 1, (DWORD_PTR)this);
-	SetWindowSubclass(listParam,   ChildSubclassProc, 2, (DWORD_PTR)this);
-	SetWindowSubclass(listOutput,  ChildSubclassProc, 3, (DWORD_PTR)this);
-	SetWindowSubclass(listInput,   ChildSubclassProc, 4, (DWORD_PTR)this);
+	SetWindowSubclass(listRack,        ChildSubclassProc, 0, (DWORD_PTR)this);
+	SetWindowSubclass(treeLibrary,     ChildSubclassProc, 1, (DWORD_PTR)this);
+	SetWindowSubclass(listParam,       ChildSubclassProc, 2, (DWORD_PTR)this);
+	SetWindowSubclass(listOutput,      ChildSubclassProc, 3, (DWORD_PTR)this);
+	SetWindowSubclass(listInput,       ChildSubclassProc, 4, (DWORD_PTR)this);
+	SetWindowSubclass(listContextMenu, ChildSubclassProc, 5, (DWORD_PTR)this);
 
 	SetTimer(hwnd, TIMER_ID, TIMER_MS, nullptr);
 
@@ -331,7 +343,7 @@ void AccessibleWindow::onSize() {
 	int sbH   = sbRc.bottom - sbRc.top;
 	int listH = h - sbH;
 
-	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput };
+	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput, listContextMenu };
 	for (HWND c : ctrls)
 		SetWindowPos(c, nullptr, 0, 0, w, listH, SWP_NOZORDER | SWP_NOMOVE);
 }
@@ -345,8 +357,8 @@ void AccessibleWindow::setStatus(const std::string& msg) {
 // ── View switching ───────────────────────────────────────────────────────────
 
 void AccessibleWindow::switchView(View v) {
-	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput };
-	for (int i = 0; i < 5; i++)
+	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput, listContextMenu };
+	for (int i = 0; i < 6; i++)
 		ShowWindow(ctrls[i], (i == (int)v) ? SW_SHOW : SW_HIDE);
 	currentView = v;
 
@@ -378,12 +390,15 @@ void AccessibleWindow::switchView(View v) {
 		case INPUT:
 			refreshPortView(false);
 			break;
+		case CONTEXT_MENU:
+			// Items already populated by showContextMenu() before this call.
+			break;
 	}
 
 	// In the item lists, land focus on the first row so a screen-reader user
 	// hears item 1 on entry and the first Down arrow moves to item 2 (the
 	// expected behaviour). Don't override an existing focus on revisits.
-	if (v == PARAM || v == OUTPUT || v == INPUT) {
+	if (v == PARAM || v == OUTPUT || v == INPUT || v == CONTEXT_MENU) {
 		HWND lv = ctrls[(int)v];
 		if (lvFocused(lv) < 0)
 			lvFocusRow(lv, 0, false);   // SetFocus below makes NVDA announce it
@@ -404,6 +419,132 @@ void AccessibleWindow::refreshCurrentView() {
 	// which floods NVDA's event queue and causes 1-second+ speech latency.
 	// Values are refreshed on row focus change (WM_NOTIFY/LVN_ITEMCHANGED)
 	// and after explicit user edits (handleParamKey → lvSetSubtext).
+}
+
+// ── Context menu ─────────────────────────────────────────────────────────────
+
+void AccessibleWindow::showContextMenu(std::vector<ContextMenuItem> items) {
+	previousView = currentView;
+	contextItems = std::move(items);
+	ListView_DeleteAllItems(listContextMenu);
+	for (int i = 0; i < (int)contextItems.size(); i++)
+		lvAppendRow(listContextMenu, contextItems[i].label, (LPARAM)i);
+	switchView(CONTEXT_MENU);
+}
+
+void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
+	if (!mw || !mw->module)
+		return;
+
+	engine::Module* mod     = mw->module;
+	bool            bypassed = mod->isBypassed();
+
+	std::vector<ContextMenuItem> items;
+
+	items.push_back({L"Azzera parametri", [this, mw]() {
+		pushCommand([mw]() {
+			mw->resetAction();
+		});
+	}});
+
+	items.push_back({L"Randomizza parametri", [this, mw]() {
+		pushCommand([mw]() {
+			mw->randomizeAction();
+		});
+	}});
+
+	items.push_back({L"Disconnetti cavi", [this, mw]() {
+		pushCommand([mw]() {
+			mw->disconnectAction();
+		});
+	}});
+
+	std::wstring bypassLabel = bypassed ? L"Bypass: disattiva" : L"Bypass: attiva";
+	items.push_back({bypassLabel, [this, mw, bypassed]() {
+		pushCommand([mw, bypassed]() {
+			mw->bypassAction(!bypassed);
+		});
+	}});
+
+	items.push_back({L"Duplica (senza cavi)", [this, mw]() {
+		pushCommand([mw]() {
+			mw->cloneAction(false);
+		});
+	}});
+
+	items.push_back({L"Duplica con cavi", [this, mw]() {
+		pushCommand([mw]() {
+			mw->cloneAction(true);
+		});
+	}});
+
+	items.push_back({L"Elimina", [this, mw]() {
+		std::string  sname = mw->model ? mw->model->name : "?";
+		std::wstring name  = toWide(sname);
+		if (MessageBoxW(hwnd,
+		                (L"Rimuovere \"" + name + L"\"?").c_str(),
+		                L"Conferma", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+			pushCommand([this, mw, sname]() {
+				engine::Module* mod = mw->module;
+				mw->removeAction();
+				if (currentModule == mod) {
+					currentModule   = nullptr;
+					lastParamModule = nullptr;
+				}
+				refreshRackView();
+				rackDirty = false;
+				setStatus("Modulo \"" + sname + "\" rimosso.");
+			});
+		}
+	}});
+
+	showContextMenu(std::move(items));
+}
+
+void AccessibleWindow::buildParamContextMenu(int paramId) {
+	if (!currentModule)
+		return;
+	engine::ParamQuantity* pq = currentModule->getParamQuantity(paramId);
+	if (!pq)
+		return;
+
+	std::vector<ContextMenuItem> items;
+
+	int row = lvFocused(listParam);
+	items.push_back({L"Azzera al valore predefinito", [this, pq, row]() {
+		pq->reset();
+		if (row >= 0) {
+			std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
+			lvSetSubtext(listParam, row, 1, valW);
+			lvFocusRow(listParam, row);
+		}
+	}});
+
+	showContextMenu(std::move(items));
+}
+
+void AccessibleWindow::handleContextMenuKey() {
+	switch (currentView) {
+		case RACK: {
+			int row = lvFocused(listRack);
+			if (row < 0)
+				return;
+			LPARAM lp = lvGetParam(listRack, row);
+			if (lp == 0)
+				return;
+			buildModuleContextMenu(reinterpret_cast<app::ModuleWidget*>(lp));
+			break;
+		}
+		case PARAM: {
+			int row = lvFocused(listParam);
+			if (row < 0 || !currentModule)
+				return;
+			buildParamContextMenu((int)lvGetParam(listParam, row));
+			break;
+		}
+		default:
+			break;
+	}
 }
 
 // ── Rack view ────────────────────────────────────────────────────────────────
@@ -575,8 +716,20 @@ void AccessibleWindow::placeModule(plugin::Model* model) {
 	engine::Module* m = model->createModule();
 	if (!m)
 		return;
+	// Register the module with the engine BEFORE creating the widget, exactly as
+	// the native module browser does (see Browser.cpp). This is the step we were
+	// missing: RackWidget::addModule() only inserts the *widget* into the scene,
+	// it does NOT add the module to the engine. Without this call the engine never
+	// knows the module exists, so when the ModuleWidget is later destroyed
+	// (~ModuleWidget -> setModule(NULL) -> Engine::removeModule) the engine asserts
+	// that the module isn't in its list and aborts. That fired on delete, on
+	// duplicate (cloneAction -> prepareSaveModule), and on every shutdown when
+	// RackWidget::clear() tears down all module widgets.
+	APP->engine->addModule(m);
+
 	app::ModuleWidget* mw = model->createModuleWidget(m);
 	if (!mw) {
+		APP->engine->removeModule(m);
 		delete m;
 		return;
 	}
@@ -593,6 +746,14 @@ void AccessibleWindow::placeModule(plugin::Model* model) {
 
 	APP->scene->rack->setModulePosNearest(mw, pos);
 	APP->scene->rack->addModule(mw);
+
+	// Load the module's default preset, like the native browser does.
+	mw->loadTemplate();
+
+	// Register an undo action so Ctrl+Z removes the module (matches native add).
+	history::ModuleAdd* ha = new history::ModuleAdd;
+	ha->setModule(mw);
+	APP->history->push(ha);
 
 	setStatus("Modulo \"" + model->name + "\" aggiunto.");
 	// Keep focus on the inserted module's row (not on the new free slot) so the
@@ -746,14 +907,16 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 		pq->setValue(next);
 	}
 
-	// Update the value cell and announce ONLY the new value (not the param name).
-	// lvSetSubtext fires EVENT_OBJECT_NAMECHANGE on the value subitem, which NVDA
-	// reads as the value; we deliberately do NOT re-fire focus on the whole row
-	// here (that would also re-read the parameter name, which is too verbose for
-	// a live value readout).
+	// Update the visible value cell, then re-fire EVENT_OBJECT_FOCUS on the row so
+	// the screen reader re-reads it. This is verbose (it reads the whole row:
+	// parameter name + value) but it is reliably audible — a bare
+	// EVENT_OBJECT_VALUECHANGE is silent because a Win32 ListView item has no MSAA
+	// value of its own, and the NVDA controller client didn't work here either.
+	// TODO: find a way to announce ONLY the value (likely a UIA notification
+	// provider or a custom IAccessible proxy that exposes accValue).
 	std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
 	lvSetSubtext(listParam, row, 1, valW);
-	NotifyWinEvent(EVENT_OBJECT_VALUECHANGE, listParam, OBJID_CLIENT, row + 1);
+	lvFocusRow(listParam, row);
 }
 
 // ── Actions: ports / cables ──────────────────────────────────────────────────
@@ -906,6 +1069,14 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
   UINT_PTR /*uid*/, DWORD_PTR data) {
 	auto* self = reinterpret_cast<AccessibleWindow*>(data);
 
+	// WM_CONTEXTMENU is sent by the system for both the Application key and
+	// Shift+F10 — the standard screen-reader shortcut for context menus.
+	if (msg == WM_CONTEXTMENU) {
+		if (self->currentView != CONTEXT_MENU)
+			self->handleContextMenuKey();
+		return 0;
+	}
+
 	if (msg == WM_KEYDOWN) {
 		switch (wp) {
 
@@ -923,7 +1094,10 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				return 0;
 
 			case VK_ESCAPE:
-				if (self->pendingCable.active) {
+				if (self->currentView == CONTEXT_MENU) {
+					self->switchView(self->previousView);
+				}
+				else if (self->pendingCable.active) {
 					self->pendingCable.active = false;
 					self->setStatus("Connessione annullata.");
 				}
@@ -939,6 +1113,15 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 					case LIBRARY: self->handleLibraryEnter();           return 0;
 					case OUTPUT:  self->handlePortEnter(true);          return 0;
 					case INPUT:   self->handlePortEnter(false);         return 0;
+					case CONTEXT_MENU: {
+						int row = lvFocused(self->listContextMenu);
+						if (row >= 0 && row < (int)self->contextItems.size()) {
+							auto action = self->contextItems[row].action;
+							self->switchView(self->previousView);
+							action();
+						}
+						return 0;
+					}
 					default: break;
 				}
 				break;

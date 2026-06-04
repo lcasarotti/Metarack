@@ -38,6 +38,7 @@
 	// responsive to screen-reader COM/MSAA queries. See Window::step().
 	#define WIN32_LEAN_AND_MEAN
 	#include <windows.h>
+	#include <accessible/AccessibleWindow.hpp>
 #endif
 
 
@@ -451,6 +452,15 @@ void Window::step() {
 
 	// In case glfwPollEvents() sets another OpenGL context
 	glfwMakeContextCurrent(win);
+
+#if defined ARCH_WIN
+	// Run any mutations queued by the accessibility window. This is the same
+	// safe point at which native key events are handled (right after
+	// glfwPollEvents, before the scene is stepped and drawn), so tearing down
+	// modules/cables and their OpenGL framebuffers here is safe.
+	if (accessible::AccessibleWindow::instance)
+		accessible::AccessibleWindow::instance->drainCommands();
+#endif
 
 	// Call cursorPosCallback every frame, not just when the mouse moves
 	{
