@@ -1070,7 +1070,24 @@ void AccessibleWindow::cleanupCapturedMenu() {
 
 // Open the display-cell list for the current module (D key from RACK or PARAM).
 void AccessibleWindow::handleDisplayKey() {
-	if (!APP || !APP->scene || !APP->scene->rack || !currentModule)
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	// In the rack list, act on the module the screen reader is focused on, just
+	// like P/O/I do (handleRackKey). Without this we'd use a stale currentModule
+	// left over from an earlier interaction, so D would only work after the user
+	// had already opened that module's param/port view.
+	if (currentView == RACK) {
+		int row = lvFocused(listRack);
+		if (row < 0)
+			return;
+		LPARAM lp = lvGetParam(listRack, row);
+		if (lp == 0)
+			return;
+		currentModule = reinterpret_cast<app::ModuleWidget*>(lp)->module;
+	}
+
+	if (!currentModule)
 		return;
 	app::ModuleWidget* mw = APP->scene->rack->getModule(currentModule->id);
 	if (!mw)
