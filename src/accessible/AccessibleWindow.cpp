@@ -115,6 +115,15 @@ static std::wstring toWide(const std::string& s) {
 	return w;
 }
 
+static std::string toUtf8(const std::wstring& w) {
+	if (w.empty())
+		return {};
+	int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	std::string s(n - 1, '\0');
+	WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], n, nullptr, nullptr);
+	return s;
+}
+
 static void lvAddColumn(HWND lv, int col, const wchar_t* label, int width) {
 	LVCOLUMNW c = {};
 	c.mask    = LVCF_TEXT | LVCF_WIDTH;
@@ -681,6 +690,145 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 	showContextMenu(std::move(items));
 }
 
+// ── Input dialog (in-memory DLGTEMPLATE, no .rc file needed) ─────────────────
+
+struct InputDlgData {
+	std::wstring prompt;
+	std::wstring initial;
+	std::wstring result;
+	bool ok = false;
+};
+
+static INT_PTR CALLBACK inputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+	switch (msg) {
+		case WM_INITDIALOG: {
+			auto* d = reinterpret_cast<InputDlgData*>(lp);
+			SetWindowLongPtrW(dlg, GWLP_USERDATA, (LONG_PTR)d);
+			SetDlgItemTextW(dlg, 1001, d->prompt.c_str());
+			SetDlgItemTextW(dlg, 1002, d->initial.c_str());
+			SendDlgItemMessageW(dlg, 1002, EM_SETSEL, 0, -1);
+			return TRUE;
+		}
+		case WM_COMMAND: {
+			auto* d = reinterpret_cast<InputDlgData*>(GetWindowLongPtrW(dlg, GWLP_USERDATA));
+			if (LOWORD(wp) == IDOK) {
+				int len = GetWindowTextLengthW(GetDlgItem(dlg, 1002));
+				d->result.resize(len);
+				if (len > 0)
+					GetWindowTextW(GetDlgItem(dlg, 1002), &d->result[0], len + 1);
+				d->ok = true;
+				EndDialog(dlg, IDOK);
+			}
+			else if (LOWORD(wp) == IDCANCEL) {
+				EndDialog(dlg, IDCANCEL);
+			}
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+// Builds a DLGTEMPLATE in memory for a simple prompt dialog with one edit field.
+// Layout (dialog units): 220×80, 4 items: static label, edit, OK, Cancel.
+static std::vector<BYTE> buildInputDlgTemplate(const std::wstring& title,
+    const std::wstring& prompt,
+    const std::wstring& initial) {
+	std::vector<BYTE> buf;
+	buf.reserve(512);
+
+	auto writeW = [&](WORD w) {
+		buf.push_back((BYTE)(w & 0xFF));
+		buf.push_back((BYTE)(w >> 8));
+	};
+	auto writeD = [&](DWORD d) {
+		buf.push_back((BYTE)(d & 0xFF));
+		buf.push_back((BYTE)((d >> 8) & 0xFF));
+		buf.push_back((BYTE)((d >> 16) & 0xFF));
+		buf.push_back((BYTE)((d >> 24) & 0xFF));
+	};
+	auto writeWStr = [&](const std::wstring & s) {
+		for (wchar_t c : s)
+			writeW((WORD)c);
+		writeW(0);
+	};
+	auto align4 = [&]() {
+		while (buf.size() % 4 != 0)
+			buf.push_back(0);
+	};
+
+	// DLGTEMPLATE header
+	writeD(DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU);
+	writeD(0);         // dwExtendedStyle
+	writeW(4);         // cdit: static + edit + OK + Cancel
+	writeW(0); writeW(0); writeW(220); writeW(80); // x,y,cx,cy
+	writeW(0);         // no menu
+	writeW(0);         // default window class
+	writeWStr(title);
+	writeW(8);         // font point size
+	writeWStr(L"MS Shell Dlg");
+
+	// Item 1: Static label
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | SS_LEFT);
+	writeD(0);
+	writeW(7); writeW(7); writeW(206); writeW(20); // x,y,cx,cy
+	writeW(1001);
+	writeW(0xFFFF); writeW(0x0082); // Static class atom
+	writeWStr(prompt);
+	writeW(0);
+
+	// Item 2: Edit control (pre-filled with current value)
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL);
+	writeD(0);
+	writeW(7); writeW(30); writeW(206); writeW(14); // x,y,cx,cy
+	writeW(1002);
+	writeW(0xFFFF); writeW(0x0081); // Edit class atom
+	writeWStr(initial);
+	writeW(0);
+
+	// Item 3: OK button
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON);
+	writeD(0);
+	writeW(60); writeW(52); writeW(50); writeW(14);
+	writeW((WORD)IDOK);
+	writeW(0xFFFF); writeW(0x0080); // Button class atom
+	writeWStr(L"OK");
+	writeW(0);
+
+	// Item 4: Cancel button
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON);
+	writeD(0);
+	writeW(116); writeW(52); writeW(50); writeW(14);
+	writeW((WORD)IDCANCEL);
+	writeW(0xFFFF); writeW(0x0080); // Button class atom
+	writeWStr(L"Annulla");
+	writeW(0);
+
+	return buf;
+}
+
+// Shows a modal input dialog; returns the entered text if OK, empty string if cancelled.
+static std::wstring showInputDialog(HWND parent, const std::wstring& title,
+                                    const std::wstring& prompt, const std::wstring& initial) {
+	InputDlgData d;
+	d.prompt  = prompt;
+	d.initial = initial;
+
+	auto tmpl = buildInputDlgTemplate(title, prompt, initial);
+	HINSTANCE hInst = (HINSTANCE)GetModuleHandleW(nullptr);
+
+	DialogBoxIndirectParamW(hInst,
+	                        reinterpret_cast<LPCDLGTEMPLATEW>(tmpl.data()),
+	                        parent, inputDlgProc, (LPARAM)&d);
+
+	return d.ok ? d.result : std::wstring{};
+}
+
+// ── Parameter context menu ────────────────────────────────────────────────────
+
 void AccessibleWindow::buildParamContextMenu(int paramId) {
 	if (!currentModule)
 		return;
@@ -691,6 +839,26 @@ void AccessibleWindow::buildParamContextMenu(int paramId) {
 	std::vector<ContextMenuItem> items;
 
 	int row = lvFocused(listParam);
+
+	items.push_back({L"Imposta valore…", [this, pq, row]() {
+		std::wstring paramName = toWide(pq->name);
+		std::wstring current   = toWide(pq->getDisplayValueString());
+		std::wstring prompt    = L"Valore per «" + paramName + L"»:\n"
+		                         L"(Es: 440, C4, log2(8), dbtogain(-6))";
+
+		std::wstring text = showInputDialog(hwnd, L"Imposta valore", prompt, current);
+		if (text.empty())
+			return;
+
+		pq->setDisplayValueString(toUtf8(text));
+
+		if (row >= 0) {
+			std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
+			lvSetSubtext(listParam, row, 1, valW);
+			lvFocusRow(listParam, row);
+		}
+	}});
+
 	items.push_back({L"Azzera al valore predefinito", [this, pq, row]() {
 		pq->reset();
 		if (row >= 0) {
