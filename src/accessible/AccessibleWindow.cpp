@@ -128,6 +128,14 @@ static std::string toUtf8(const std::wstring& w) {
 	return s;
 }
 
+// Returns the Italian string when settings::language == "it", English otherwise.
+static const wchar_t* T(const wchar_t* en, const wchar_t* it) {
+	return settings::language == "it" ? it : en;
+}
+static std::string Ts(const char* en, const char* it) {
+	return settings::language == "it" ? it : en;
+}
+
 static void lvAddColumn(HWND lv, int col, const wchar_t* label, int width) {
 	LVCOLUMNW c = {};
 	c.mask    = LVCF_TEXT | LVCF_WIDTH;
@@ -259,7 +267,7 @@ AccessibleWindow* AccessibleWindow::create() {
 	HWND hwnd = CreateWindowExW(
 	              0,
 	              WND_CLASS,
-	              L"VCV Rack — Interfaccia accessibile",
+	              T(L"VCV Rack — Accessible Interface", L"VCV Rack — Interfaccia accessibile"),
 	              WS_OVERLAPPEDWINDOW | WS_VISIBLE,
 	              CW_USEDEFAULT, CW_USEDEFAULT, 580, 720,
 	              nullptr, nullptr, hInst, self);
@@ -396,7 +404,7 @@ void AccessibleWindow::onCreate() {
 	int h = rc.bottom;
 
 	// Status bar (auto-sizes itself)
-	statusBar = CreateWindowExW(0, STATUSCLASSNAME, L"Pronto.",
+	statusBar = CreateWindowExW(0, STATUSCLASSNAME, T(L"Ready.", L"Pronto."),
 	                            WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
 	                            0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)999, hInst, nullptr);
 
@@ -421,7 +429,7 @@ void AccessibleWindow::onCreate() {
 	                           0, 0, w, listH,
 	                           hwnd, (HMENU)(INT_PTR)ID_RACK, hInst, nullptr);
 	ListView_SetExtendedListViewStyle(listRack, lvEx);
-	lvAddColumn(listRack, 0, L"Modulo", 230);
+	lvAddColumn(listRack, 0, T(L"Module", L"Modulo"), 230);
 	lvAddColumn(listRack, 1, L"Manufacturer", 180);
 	lvAddColumn(listRack, 2, L"HP", 60);
 
@@ -438,8 +446,8 @@ void AccessibleWindow::onCreate() {
 	                            0, 0, w, listH,
 	                            hwnd, (HMENU)(INT_PTR)ID_PARAM, hInst, nullptr);
 	ListView_SetExtendedListViewStyle(listParam, lvEx);
-	lvAddColumn(listParam, 0, L"Parametro", 250);
-	lvAddColumn(listParam, 1, L"Valore", 210);
+	lvAddColumn(listParam, 0, T(L"Parameter", L"Parametro"), 250);
+	lvAddColumn(listParam, 1, T(L"Value", L"Valore"), 210);
 
 	// Output ListView
 	listOutput = CreateWindowExW(0, WC_LISTVIEWW, L"",
@@ -448,7 +456,7 @@ void AccessibleWindow::onCreate() {
 	                             hwnd, (HMENU)(INT_PTR)ID_OUTPUT, hInst, nullptr);
 	ListView_SetExtendedListViewStyle(listOutput, lvEx);
 	lvAddColumn(listOutput, 0, L"Output", 250);
-	lvAddColumn(listOutput, 1, L"Stato", 210);
+	lvAddColumn(listOutput, 1, T(L"State", L"Stato"), 210);
 
 	// Input ListView
 	listInput = CreateWindowExW(0, WC_LISTVIEWW, L"",
@@ -457,7 +465,7 @@ void AccessibleWindow::onCreate() {
 	                            hwnd, (HMENU)(INT_PTR)ID_INPUT, hInst, nullptr);
 	ListView_SetExtendedListViewStyle(listInput, lvEx);
 	lvAddColumn(listInput, 0, L"Input", 250);
-	lvAddColumn(listInput, 1, L"Stato", 210);
+	lvAddColumn(listInput, 1, T(L"State", L"Stato"), 210);
 
 	// Context-menu ListView (single column, initially hidden)
 	listContextMenu = CreateWindowExW(0, WC_LISTVIEWW, L"",
@@ -465,7 +473,7 @@ void AccessibleWindow::onCreate() {
 	                                  0, 0, w, listH,
 	                                  hwnd, (HMENU)(INT_PTR)ID_CONTEXT_MENU, hInst, nullptr);
 	ListView_SetExtendedListViewStyle(listContextMenu, lvEx);
-	lvAddColumn(listContextMenu, 0, L"Azione", w - 4);
+	lvAddColumn(listContextMenu, 0, T(L"Action", L"Azione"), w - 4);
 
 	// Subclass all controls for keyboard interception
 	SetWindowSubclass(listRack,        ChildSubclassProc, 0, (DWORD_PTR)this);
@@ -615,7 +623,7 @@ void AccessibleWindow::onTimer() {
 			std::wstring newText = toWide(learningCell->text);
 			if (newText != learningLastText) {
 				learningLastText = newText;
-				setStatus("Valore aggiornato: " + toUtf8(newText) + ".");
+				setStatus(Ts("Value updated: ", "Valore aggiornato: ") + toUtf8(newText) + ".");
 			}
 		}
 	}
@@ -651,32 +659,32 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 
 	std::vector<ContextMenuItem> items;
 
-	items.push_back({L"Azzera parametri", [this, mw]() {
+	items.push_back({T(L"Reset parameters", L"Azzera parametri"), [this, mw]() {
 		pushCommand([mw]() {
 			mw->resetAction();
 		});
 	}});
 
-	items.push_back({L"Randomizza parametri", [this, mw]() {
+	items.push_back({T(L"Randomize parameters", L"Randomizza parametri"), [this, mw]() {
 		pushCommand([mw]() {
 			mw->randomizeAction();
 		});
 	}});
 
-	items.push_back({L"Disconnetti cavi", [this, mw]() {
+	items.push_back({T(L"Disconnect cables", L"Disconnetti cavi"), [this, mw]() {
 		pushCommand([mw]() {
 			mw->disconnectAction();
 		});
 	}});
 
-	std::wstring bypassLabel = bypassed ? L"Bypass: disattiva" : L"Bypass: attiva";
+	std::wstring bypassLabel = bypassed ? T(L"Bypass: disable", L"Bypass: disattiva") : T(L"Bypass: enable", L"Bypass: attiva");
 	items.push_back({bypassLabel, [this, mw, bypassed]() {
 		pushCommand([mw, bypassed]() {
 			mw->bypassAction(!bypassed);
 		});
 	}});
 
-	items.push_back({L"Duplica (senza cavi)", [this, mw]() {
+	items.push_back({T(L"Duplicate (no cables)", L"Duplica (senza cavi)"), [this, mw]() {
 		pushCommand([this, mw]() {
 			std::string sname = mw->model ? mw->model->name : "?";
 			mw->cloneAction(false);
@@ -686,27 +694,27 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 			// the duplicate stays invisible in the list until the next rebuild.
 			refreshRackView();
 			rackDirty = false;
-			setStatus("Modulo \"" + sname + "\" duplicato.");
+			setStatus(Ts("Module \"", "Modulo \"") + sname + Ts("\" duplicated.", "\" duplicato."));
 		});
 	}});
 
-	items.push_back({L"Duplica con cavi", [this, mw]() {
+	items.push_back({T(L"Duplicate with cables", L"Duplica con cavi"), [this, mw]() {
 		pushCommand([this, mw]() {
 			std::string sname = mw->model ? mw->model->name : "?";
 			mw->cloneAction(true);
 			// See note above: refresh the accessible RACK list so the clone appears.
 			refreshRackView();
 			rackDirty = false;
-			setStatus("Modulo \"" + sname + "\" duplicato (con cavi).");
+			setStatus(Ts("Module \"", "Modulo \"") + sname + Ts("\" duplicated (with cables).", "\" duplicato (con cavi)."));
 		});
 	}});
 
-	items.push_back({L"Elimina", [this, mw]() {
+	items.push_back({T(L"Delete", L"Elimina"), [this, mw]() {
 		std::string  sname = mw->model ? mw->model->name : "?";
 		std::wstring name  = toWide(sname);
 		if (MessageBoxW(hwnd,
-		                (L"Rimuovere \"" + name + L"\"?").c_str(),
-		                L"Conferma", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+		                (T(L"Remove \"", L"Rimuovere \"") + name + L"\"?").c_str(),
+		                T(L"Confirm", L"Conferma"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
 			pushCommand([this, mw, sname]() {
 				cleanupCapturedMenu();
 				engine::Module* mod = mw->module;
@@ -717,7 +725,7 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 				}
 				refreshRackView();
 				rackDirty = false;
-				setStatus("Modulo \"" + sname + "\" rimosso.");
+				setStatus(Ts("Module \"", "Modulo \"") + sname + Ts("\" removed.", "\" rimosso."));
 			});
 		}
 	}});
@@ -839,7 +847,7 @@ static std::vector<BYTE> buildInputDlgTemplate(const std::wstring& title,
 	writeW(116); writeW(52); writeW(50); writeW(14);
 	writeW((WORD)IDCANCEL);
 	writeW(0xFFFF); writeW(0x0080); // Button class atom
-	writeWStr(L"Annulla");
+	writeWStr(T(L"Cancel", L"Annulla"));
 	writeW(0);
 
 	return buf;
@@ -875,13 +883,14 @@ void AccessibleWindow::buildParamContextMenu(int paramId) {
 
 	int row = lvFocused(listParam);
 
-	items.push_back({L"Imposta valore…", [this, pq, row]() {
+	items.push_back({T(L"Set value…", L"Imposta valore…"), [this, pq, row]() {
 		std::wstring paramName = toWide(pq->name);
 		std::wstring current   = toWide(pq->getDisplayValueString());
-		std::wstring prompt    = L"Valore per «" + paramName + L"»:\n"
-		                         L"(Es: 440, C4, log2(8), dbtogain(-6))";
+		std::wstring prompt    = T(L"Value for «", L"Valore per «") + paramName +
+		                         T(L"»:\n(e.g.: 440, C4, log2(8), dbtogain(-6))",
+		                           L"»:\n(Es: 440, C4, log2(8), dbtogain(-6))");
 
-		std::wstring text = showInputDialog(hwnd, L"Imposta valore", prompt, current);
+		std::wstring text = showInputDialog(hwnd, T(L"Set value", L"Imposta valore"), prompt, current);
 		if (text.empty())
 			return;
 
@@ -894,7 +903,7 @@ void AccessibleWindow::buildParamContextMenu(int paramId) {
 		}
 	}});
 
-	items.push_back({L"Azzera al valore predefinito", [this, pq, row]() {
+	items.push_back({T(L"Reset to default", L"Azzera al valore predefinito"), [this, pq, row]() {
 		pq->reset();
 		if (row >= 0) {
 			std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
@@ -969,7 +978,7 @@ void AccessibleWindow::buildModuleSpecificContextMenu(app::ModuleWidget* mw) {
 
 	if (items.empty()) {
 		delete extra;
-		setStatus("Nessuna opzione specifica per questo modulo.");
+		setStatus(Ts("No specific options for this module.", "Nessuna opzione specifica per questo modulo."));
 		return;
 	}
 
@@ -1013,7 +1022,7 @@ std::vector<AccessibleWindow::ContextMenuItem> AccessibleWindow::buildItemsFromM
 		}
 
 		if (mi->disabled) {
-			label += L" (non disponibile)";
+			label += T(L" (unavailable)", L" (non disponibile)");
 			items.push_back({label, []() {}, false});
 			continue;
 		}
@@ -1085,7 +1094,7 @@ void AccessibleWindow::openDisplayCell(DisplayCell cell) {
 				APP->scene->removeChild(overlay);
 				delete overlay;
 				capturedOverlay = nullptr;
-				setStatus("Errore: struttura del menu non riconosciuta.");
+				setStatus(Ts("Error: unrecognized menu structure.", "Errore: struttura del menu non riconosciuta."));
 			}
 			return;
 		}
@@ -1097,7 +1106,7 @@ void AccessibleWindow::openDisplayCell(DisplayCell cell) {
 	APP->event->setSelectedWidget(cell.choice);
 	learningCell = cell.choice;
 	learningLastText = toWide(cell.choice->text);
-	setStatus("In apprendimento — premi il controllo MIDI. Spazio = toggle. Esc = annulla.");
+	setStatus(Ts("Learning — press the MIDI control. Space = toggle. Esc = cancel.", "In apprendimento — premi il controllo MIDI. Spazio = toggle. Esc = annulla."));
 }
 
 // Remove the captured overlay from the scene and free all display-navigation state.
@@ -1153,7 +1162,7 @@ void AccessibleWindow::handleDisplayKey() {
 	collectDisplayCells(mw);
 
 	if (displayCells.empty()) {
-		setStatus("Nessun display cliccabile per questo modulo.");
+		setStatus(Ts("No clickable displays for this module.", "Nessun display cliccabile per questo modulo."));
 		return;
 	}
 
@@ -1209,7 +1218,7 @@ void AccessibleWindow::reloadRackAfterMutation() {
 void AccessibleWindow::rebuildRecentPopup() {
 	while (DeleteMenu(popupRecent, 0, MF_BYPOSITION)) {}
 	if (settings::recentPatchPaths.empty()) {
-		AppendMenuW(popupRecent, MF_STRING | MF_GRAYED, 0, L"(nessuna patch recente)");
+		AppendMenuW(popupRecent, MF_STRING | MF_GRAYED, 0, T(L"(no recent patches)", L"(nessuna patch recente)"));
 		return;
 	}
 	for (const std::string& path : settings::recentPatchPaths) {
@@ -1226,24 +1235,24 @@ void AccessibleWindow::rebuildRecentPopup() {
 void AccessibleWindow::rebuildLibraryPopup() {
 	while (DeleteMenu(popupLibrary, 0, MF_BYPOSITION)) {}
 	if (!library::isLoggedIn()) {
-		addMenuCmd(popupLibrary, L"Registrati…", []() {
+		addMenuCmd(popupLibrary, T(L"Register…", L"Registrati…"), []() {
 			system::openBrowser("https://vcvrack.com/login");
 		});
 		// Login needs email/password text fields, which a native menu can't host;
 		// use the main GUI's Library menu to sign in.
-		AppendMenuW(popupLibrary, MF_STRING | MF_GRAYED, 0, L"(accedi dalla finestra principale)");
+		AppendMenuW(popupLibrary, MF_STRING | MF_GRAYED, 0, T(L"(sign in from the main window)", L"(accedi dalla finestra principale)"));
 		return;
 	}
-	addMenuCmd(popupLibrary, L"Esci", []() {
+	addMenuCmd(popupLibrary, T(L"Sign out", L"Esci"), []() {
 		library::logOut();
 	});
 	addMenuCmd(popupLibrary, L"Account", []() {
 		system::openBrowser("https://vcvrack.com/account");
 	});
-	addMenuCmd(popupLibrary, L"Sfoglia libreria", []() {
+	addMenuCmd(popupLibrary, T(L"Browse library", L"Sfoglia libreria"), []() {
 		system::openBrowser("https://library.vcvrack.com/");
 	});
-	addMenuCmd(popupLibrary, L"Aggiorna tutto", []() {
+	addMenuCmd(popupLibrary, T(L"Update all", L"Aggiorna tutto"), []() {
 		std::thread([]() {
 			library::syncUpdates();
 		}).detach();
@@ -1277,62 +1286,62 @@ void AccessibleWindow::buildMenuBar() {
 
 	// ── File ──────────────────────────────────────────────────────────────────
 	HMENU file = sub(menuBar, L"&File");
-	addMenuCmd(file, L"Nuovo", [this]() {
+	addMenuCmd(file, T(L"New", L"Nuovo"), [this]() {
 		pushCommand([this]() {
 			APP->patch->loadTemplateDialog();
 			reloadRackAfterMutation();
 		});
 	});
-	addMenuCmd(file, L"Apri…", [this]() {
+	addMenuCmd(file, T(L"Open…", L"Apri…"), [this]() {
 		pushCommand([this]() {
 			APP->patch->loadDialog();
 			reloadRackAfterMutation();
 		});
 	});
-	popupRecent = sub(file, L"Apri recenti");   // filled in WM_INITMENUPOPUP
-	addMenuCmd(file, L"Salva", [this]() {
+	popupRecent = sub(file, T(L"Open Recent", L"Apri recenti"));   // filled in WM_INITMENUPOPUP
+	addMenuCmd(file, T(L"Save", L"Salva"), [this]() {
 		pushCommand([]() {
 			APP->patch->saveDialog();
 		});
 	});
-	addMenuCmd(file, L"Salva come…", [this]() {
+	addMenuCmd(file, T(L"Save as…", L"Salva come…"), [this]() {
 		pushCommand([]() {
 			APP->patch->saveAsDialog();
 		});
 	});
-	addMenuCmd(file, L"Salva una copia…", [this]() {
+	addMenuCmd(file, T(L"Save a copy…", L"Salva una copia…"), [this]() {
 		pushCommand([]() {
 			APP->patch->saveAsDialog(false);
 		});
 	});
-	addMenuCmd(file, L"Ripristina", [this]() {
+	addMenuCmd(file, T(L"Revert", L"Ripristina"), [this]() {
 		pushCommand([this]() {
 			APP->patch->revertDialog();
 			reloadRackAfterMutation();
 		});
 	});
-	addMenuCmd(file, L"Sovrascrivi template", [this]() {
+	addMenuCmd(file, T(L"Overwrite template", L"Sovrascrivi template"), [this]() {
 		pushCommand([]() {
 			APP->patch->saveTemplateDialog();
 		});
 	});
 	sep(file);
-	addMenuCmd(file, L"Importa selezione…", [this]() {
+	addMenuCmd(file, T(L"Import selection…", L"Importa selezione…"), [this]() {
 		pushCommand([this]() {
 			APP->scene->rack->loadSelectionDialog();
 			reloadRackAfterMutation();
 		});
 	});
 	sep(file);
-	addMenuCmd(file, L"Esci", [this]() {
+	addMenuCmd(file, T(L"Exit", L"Esci"), [this]() {
 		pushCommand([]() {
 			APP->window->close();
 		});
 	});
 
 	// ── Edit ──────────────────────────────────────────────────────────────────
-	HMENU edit = sub(menuBar, L"&Modifica");
-	addMenuCmd(edit, L"Annulla", [this]() {
+	HMENU edit = sub(menuBar, T(L"&Edit", L"&Modifica"));
+	addMenuCmd(edit, T(L"Undo", L"Annulla"), [this]() {
 		pushCommand([this]() {
 			if (APP->history->canUndo()) {
 				APP->history->undo();
@@ -1340,7 +1349,7 @@ void AccessibleWindow::buildMenuBar() {
 			}
 		});
 	});
-	addMenuCmd(edit, L"Ripristina", [this]() {
+	addMenuCmd(edit, T(L"Redo", L"Ripristina"), [this]() {
 		pushCommand([this]() {
 			if (APP->history->canRedo()) {
 				APP->history->redo();
@@ -1348,54 +1357,54 @@ void AccessibleWindow::buildMenuBar() {
 			}
 		});
 	});
-	addMenuCmd(edit, L"Scollega tutti i cavi", [this]() {
+	addMenuCmd(edit, T(L"Disconnect all cables", L"Scollega tutti i cavi"), [this]() {
 		pushCommand([]() {
 			APP->patch->disconnectDialog();
 		});
 	});
 	sep(edit);
-	addMenuCmd(edit, L"Seleziona tutto", [this]() {
+	addMenuCmd(edit, T(L"Select all", L"Seleziona tutto"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->selectAll();
 		});
 	});
-	addMenuCmd(edit, L"Deseleziona", [this]() {
+	addMenuCmd(edit, T(L"Deselect", L"Deseleziona"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->deselectAll();
 		});
 	});
-	addMenuCmd(edit, L"Copia selezione", [this]() {
+	addMenuCmd(edit, T(L"Copy selection", L"Copia selezione"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->copyClipboardSelection();
 		});
 	});
-	addMenuCmd(edit, L"Incolla", [this]() {
+	addMenuCmd(edit, T(L"Paste", L"Incolla"), [this]() {
 		pushCommand([this]() {
 			APP->scene->rack->pasteClipboardAction();
 			reloadRackAfterMutation();
 		});
 	});
-	addMenuCmd(edit, L"Salva selezione come…", [this]() {
+	addMenuCmd(edit, T(L"Save selection as…", L"Salva selezione come…"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->saveSelectionDialog();
 		});
 	});
-	addMenuCmd(edit, L"Azzera selezione", [this]() {
+	addMenuCmd(edit, T(L"Reset selection", L"Azzera selezione"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->resetSelectionAction();
 		});
 	});
-	addMenuCmd(edit, L"Randomizza selezione", [this]() {
+	addMenuCmd(edit, T(L"Randomize selection", L"Randomizza selezione"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->randomizeSelectionAction();
 		});
 	});
-	addMenuCmd(edit, L"Scollega selezione", [this]() {
+	addMenuCmd(edit, T(L"Disconnect selection", L"Scollega selezione"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->disconnectSelectionAction();
 		});
 	});
-	addMenuCmd(edit, L"Bypass selezione", [this]() {
+	addMenuCmd(edit, T(L"Bypass selection", L"Bypass selezione"), [this]() {
 		pushCommand([]() {
 			APP->scene->rack->bypassSelectionAction(!APP->scene->rack->isSelectionBypassed());
 		});
@@ -1404,8 +1413,8 @@ void AccessibleWindow::buildMenuBar() {
 	});
 
 	// ── View ──────────────────────────────────────────────────────────────────
-	HMENU view = sub(menuBar, L"&Vista");
-	addMenuCmd(view, L"Schermo intero", [this]() {
+	HMENU view = sub(menuBar, T(L"&View", L"&Vista"));
+	addMenuCmd(view, T(L"Fullscreen", L"Schermo intero"), [this]() {
 		pushCommand([]() {
 			APP->window->setFullScreen(!APP->window->isFullScreen());
 		});
@@ -1430,18 +1439,18 @@ void AccessibleWindow::buildMenuBar() {
 			return std::abs(APP->scene->rackScroll->getZoom() - v) < 0.01f;
 		});
 	}
-	addMenuCmd(view, L"Adatta allo schermo", [this]() {
+	addMenuCmd(view, T(L"Fit to screen", L"Adatta allo schermo"), [this]() {
 		pushCommand([]() {
 			APP->scene->rackScroll->zoomToModules();
 		});
 	});
 
-	HMENU theme = sub(view, L"Tema interfaccia");
+	HMENU theme = sub(view, T(L"Interface theme", L"Tema interfaccia"));
 	struct {
 		const wchar_t* l;
 		const char* t;
 	} themes[] = {
-		{L"Scuro", "dark"}, {L"Chiaro", "light"}, {L"Scuro alto contrasto", "hcdark"}
+		{T(L"Dark", L"Scuro"), "dark"}, {T(L"Light", L"Chiaro"), "light"}, {T(L"Dark high contrast", L"Scuro alto contrasto"), "hcdark"}
 	};
 	for (auto& t : themes) {
 		const char* tn = t.t;
@@ -1455,7 +1464,7 @@ void AccessibleWindow::buildMenuBar() {
 		});
 	}
 
-	HMENU pixel = sub(view, L"Rapporto pixel");
+	HMENU pixel = sub(view, T(L"Pixel ratio", L"Rapporto pixel"));
 	struct {
 		const wchar_t* l;
 		float v;
@@ -1465,8 +1474,8 @@ void AccessibleWindow::buildMenuBar() {
 	for (auto& p : pixels)
 		fpreset(pixel, p.l, &settings::pixelRatio, p.v);
 
-	HMENU wheel = sub(view, L"Rotellina del mouse");
-	addMenuCmd(wheel, L"Scorri", []() {
+	HMENU wheel = sub(view, T(L"Mouse wheel", L"Rotellina del mouse"));
+	addMenuCmd(wheel, T(L"Scroll", L"Scorri"), []() {
 		settings::mouseWheelZoom = false;
 	},
 	[]() {
@@ -1479,41 +1488,41 @@ void AccessibleWindow::buildMenuBar() {
 		return settings::mouseWheelZoom;
 	});
 
-	addMenuCmd(view, L"Mostra tooltip", []() {
+	addMenuCmd(view, T(L"Show tooltips", L"Mostra tooltip"), []() {
 		settings::tooltips ^= true;
 	},
 	[]() {
 		return settings::tooltips;
 	});
 
-	HMENU opacity = sub(view, L"Opacità cavi");
+	HMENU opacity = sub(view, T(L"Cable opacity", L"Opacità cavi"));
 	for (int p = 0; p <= 100; p += 25)
 		fpreset(opacity, toWide(std::to_string(p) + "%").c_str(), &settings::cableOpacity, p / 100.f);
-	HMENU tension = sub(view, L"Tensione cavi");
+	HMENU tension = sub(view, T(L"Cable tension", L"Tensione cavi"));
 	for (int p = 0; p <= 100; p += 25)
 		fpreset(tension, toWide(std::to_string(p) + "%").c_str(), &settings::cableTension, p / 100.f);
-	HMENU room = sub(view, L"Luminosità stanza");
+	HMENU room = sub(view, T(L"Room brightness", L"Luminosità stanza"));
 	for (int p = 50; p <= 200; p += 25)
 		fpreset(room, toWide(std::to_string(p) + "%").c_str(), &settings::rackBrightness, p / 100.f);
-	HMENU halo = sub(view, L"Bagliore luci");
+	HMENU halo = sub(view, T(L"Light halo", L"Bagliore luci"));
 	for (int p = 0; p <= 100; p += 25)
 		fpreset(halo, toWide(std::to_string(p) + "%").c_str(), &settings::haloBrightness, p / 100.f);
 
-	addMenuCmd(view, L"Blocca cursore", []() {
+	addMenuCmd(view, T(L"Lock cursor", L"Blocca cursore"), []() {
 		settings::allowCursorLock ^= true;
 	},
 	[]() {
 		return settings::allowCursorLock;
 	});
 
-	HMENU knob = sub(view, L"Modalità manopole");
+	HMENU knob = sub(view, T(L"Knob mode", L"Modalità manopole"));
 	struct {
 		const wchar_t* l;
 		int v;
 	} knobModes[] = {
-		{L"Lineare", settings::KNOB_MODE_LINEAR},
-		{L"Rotativa assoluta", settings::KNOB_MODE_ROTARY_ABSOLUTE},
-		{L"Rotativa relativa", settings::KNOB_MODE_ROTARY_RELATIVE},
+		{T(L"Linear", L"Lineare"), settings::KNOB_MODE_LINEAR},
+		{T(L"Rotary absolute", L"Rotativa assoluta"), settings::KNOB_MODE_ROTARY_ABSOLUTE},
+		{T(L"Rotary relative", L"Rotativa relativa"), settings::KNOB_MODE_ROTARY_RELATIVE},
 	};
 	for (auto& k : knobModes) {
 		int v = k.v;
@@ -1524,35 +1533,35 @@ void AccessibleWindow::buildMenuBar() {
 			return (int)settings::knobMode == v;
 		});
 	}
-	addMenuCmd(view, L"Scorrimento manopole", []() {
+	addMenuCmd(view, T(L"Knob scroll", L"Scorrimento manopole"), []() {
 		settings::knobScroll ^= true;
 	},
 	[]() {
 		return settings::knobScroll;
 	});
-	HMENU wheelSens = sub(view, L"Sensibilità rotellina");
+	HMENU wheelSens = sub(view, T(L"Wheel sensitivity", L"Sensibilità rotellina"));
 	struct {
 		const wchar_t* l;
 		float v;
 	} senss[] = {
-		{L"Bassa", 0.0005f}, {L"Media", 0.001f}, {L"Alta", 0.002f}
+		{T(L"Low", L"Bassa"), 0.0005f}, {T(L"Medium", L"Media"), 0.001f}, {T(L"High", L"Alta"), 0.002f}
 	};
 	for (auto& s : senss)
 		fpreset(wheelSens, s.l, &settings::knobScrollSensitivity, s.v);
 
-	addMenuCmd(view, L"Blocca moduli", []() {
+	addMenuCmd(view, T(L"Lock modules", L"Blocca moduli"), []() {
 		settings::lockModules ^= true;
 	},
 	[]() {
 		return settings::lockModules;
 	});
-	addMenuCmd(view, L"Comprimi moduli", []() {
+	addMenuCmd(view, T(L"Squeeze modules", L"Comprimi moduli"), []() {
 		settings::squeezeModules ^= true;
 	},
 	[]() {
 		return settings::squeezeModules;
 	});
-	addMenuCmd(view, L"Preferisci pannelli scuri", []() {
+	addMenuCmd(view, T(L"Prefer dark panels", L"Preferisci pannelli scuri"), []() {
 		settings::preferDarkPanels ^= true;
 	},
 	[]() {
@@ -1560,14 +1569,14 @@ void AccessibleWindow::buildMenuBar() {
 	});
 
 	// ── Engine ────────────────────────────────────────────────────────────────
-	HMENU engine = sub(menuBar, L"M&otore");
-	addMenuCmd(engine, L"Indicatore CPU", []() {
+	HMENU engine = sub(menuBar, T(L"E&ngine", L"M&otore"));
+	addMenuCmd(engine, T(L"CPU meter", L"Indicatore CPU"), []() {
 		settings::cpuMeter ^= true;
 	},
 	[]() {
 		return settings::cpuMeter;
 	});
-	HMENU srate = sub(engine, L"Frequenza di campionamento");
+	HMENU srate = sub(engine, T(L"Sample rate", L"Frequenza di campionamento"));
 	addMenuCmd(srate, L"Auto", []() {
 		settings::sampleRate = 0;
 	},
@@ -1598,19 +1607,19 @@ void AccessibleWindow::buildMenuBar() {
 	}
 
 	// ── Library ───────────────────────────────────────────────────────────────
-	popupLibrary = sub(menuBar, L"&Libreria");   // filled in WM_INITMENUPOPUP
+	popupLibrary = sub(menuBar, T(L"&Library", L"&Libreria"));   // filled in WM_INITMENUPOPUP
 
 	// ── Help ──────────────────────────────────────────────────────────────────
-	HMENU help = sub(menuBar, L"&Aiuto");
-	HMENU lang = sub(help, L"Lingua");
+	HMENU help = sub(menuBar, T(L"&Help", L"&Aiuto"));
+	HMENU lang = sub(help, T(L"Language", L"Lingua"));
 	for (const std::string& language : string::getLanguages()) {
 		std::string l = language;
 		addMenuCmd(lang, toWide(string::translate("language", l)), [this, l]() {
 			if (settings::language == l)
 				return;
 			settings::language = l;
-			if (MessageBoxW(hwnd, L"Riavviare ora per applicare la lingua?",
-			                L"Lingua", MB_YESNO | MB_ICONQUESTION) == IDYES)
+			if (MessageBoxW(hwnd, T(L"Restart now to apply the language?", L"Riavviare ora per applicare la lingua?"),
+			                T(L"Language", L"Lingua"), MB_YESNO | MB_ICONQUESTION) == IDYES)
 				pushCommand([]() {
 				APP->window->close();
 				settings::restart = true;
@@ -1619,28 +1628,28 @@ void AccessibleWindow::buildMenuBar() {
 			return settings::language == l;
 		});
 	}
-	addMenuCmd(help, L"Suggerimenti", [this]() {
+	addMenuCmd(help, T(L"Tips", L"Suggerimenti"), [this]() {
 		pushCommand([]() {
 			APP->scene->addChild(app::tipWindowCreate());
 		});
 	});
-	addMenuCmd(help, L"Manuale", []() {
+	addMenuCmd(help, T(L"Manual", L"Manuale"), []() {
 		system::openBrowser("https://vcvrack.com/manual");
 	});
-	addMenuCmd(help, L"Supporto", []() {
+	addMenuCmd(help, T(L"Support", L"Supporto"), []() {
 		system::openBrowser("https://vcvrack.com/support");
 	});
 	addMenuCmd(help, L"VCVRack.com", []() {
 		system::openBrowser("https://vcvrack.com/");
 	});
 	sep(help);
-	addMenuCmd(help, L"Cartella utente", []() {
+	addMenuCmd(help, T(L"User folder", L"Cartella utente"), []() {
 		system::openDirectory(asset::user(""));
 	});
 	addMenuCmd(help, L"Changelog", []() {
 		system::openBrowser("https://github.com/VCVRack/Rack/blob/v2/CHANGELOG.md");
 	});
-	addMenuCmd(help, L"Controlla aggiornamenti di Rack", []() {
+	addMenuCmd(help, T(L"Check for Rack updates", L"Controlla aggiornamenti di Rack"), []() {
 		std::thread([]() {
 			library::checkAppUpdate();
 		}).detach();
@@ -1676,11 +1685,11 @@ void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule) {
 		int  row   = lvAppendRow(lv, toWide(mw->model->name), (LPARAM)mw);
 		std::wstring brand = mw->model->plugin ? toWide(mw->model->plugin->getBrand()) : L"";
 		lvSetSubtext(lv, row, 1, brand);
-		lvSetSubtext(lv, row, 2, std::to_wstring(hp) + L" HP");
+		lvSetSubtext(lv, row, 2, std::to_wstring(hp));
 	}
 
 	// Free slot (lParam == 0 marks it)
-	int freeRow = lvAppendRow(lv, L"[ Slot libero ]", 0);
+	int freeRow = lvAppendRow(lv, T(L"[ Free slot ]", L"[ Slot libero ]"), 0);
 	lvSetSubtext(lv, freeRow, 1, L"");
 	lvSetSubtext(lv, freeRow, 2, L"—");
 
@@ -1780,10 +1789,10 @@ void AccessibleWindow::refreshPortView(bool isOutput) {
 		engine::PortInfo* info = isOutput
 		                         ? currentModule->getOutputInfo(i)
 		                         : currentModule->getInputInfo(i);
-		std::string portName = info ? info->getName() : ("Porta " + std::to_string(i));
+		std::string portName = info ? info->getName() : (Ts("Port ", "Porta ") + std::to_string(i));
 
 		// Determine cable status
-		std::string status = "libero";
+		std::string status = Ts("free", "libero");
 		if (mw) {
 			app::PortWidget* pw = isOutput ? mw->getOutput(i) : mw->getInput(i);
 			if (pw) {
@@ -1845,7 +1854,7 @@ void AccessibleWindow::placeModule(plugin::Model* model) {
 	ha->setModule(mw);
 	APP->history->push(ha);
 
-	setStatus("Modulo \"" + model->name + "\" aggiunto.");
+	setStatus(Ts("Module \"", "Modulo \"") + model->name + Ts("\" added.", "\" aggiunto."));
 	// Keep focus on the inserted module's row (not on the new free slot) so the
 	// user gets immediate confirmation of what was added.
 	refreshRackView(mw);
@@ -1858,14 +1867,14 @@ void AccessibleWindow::pasteModuleFromClipboard() {
 
 	std::string clip = getClipboardTextUtf8();
 	if (clip.empty()) {
-		setStatus("Appunti vuoti.");
+		setStatus(Ts("Clipboard is empty.", "Appunti vuoti."));
 		return;
 	}
 
 	json_error_t error;
 	json_t* moduleJ = json_loads(clip.c_str(), 0, &error);
 	if (!moduleJ) {
-		setStatus("Appunti: nessun modulo valido.");
+		setStatus(Ts("Clipboard: no valid module.", "Appunti: nessun modulo valido."));
 		return;
 	}
 	DEFER({json_decref(moduleJ);});
@@ -1879,7 +1888,7 @@ void AccessibleWindow::pasteModuleFromClipboard() {
 	}
 	catch (Exception& e) {
 		WARN("%s", e.what());
-		setStatus("Appunti: modulo non riconosciuto.");
+		setStatus(Ts("Clipboard: unknown module.", "Appunti: modulo non riconosciuto."));
 		return;
 	}
 
@@ -1910,7 +1919,7 @@ void AccessibleWindow::pasteModuleFromClipboard() {
 	ha->setModule(mw);
 	APP->history->push(ha);
 
-	setStatus("Modulo \"" + model->name + "\" incollato.");
+	setStatus(Ts("Module \"", "Modulo \"") + model->name + Ts("\" pasted.", "\" incollato."));
 	refreshRackView(mw);
 	rackDirty = false;
 }
@@ -1942,7 +1951,7 @@ void AccessibleWindow::handleRackCtrlKey(WPARAM vk, bool shift) {
 			// Copy the focused module's preset to the clipboard.
 			pushCommand([this, mw, sname]() {
 				mw->copyClipboard();
-				setStatus("Modulo \"" + sname + "\" copiato.");
+				setStatus(Ts("Module \"", "Modulo \"") + sname + Ts("\" copied.", "\" copiato."));
 			});
 			break;
 
@@ -1951,9 +1960,9 @@ void AccessibleWindow::handleRackCtrlKey(WPARAM vk, bool shift) {
 			// Ctrl+V over an existing module in the standard GUI).
 			pushCommand([this, mw, sname]() {
 				if (mw->pasteClipboardAction())
-					setStatus("Preset incollato su \"" + sname + "\".");
+					setStatus(Ts("Preset pasted onto \"", "Preset incollato su \"") + sname + "\".");
 				else
-					setStatus("Impossibile incollare il preset.");
+					setStatus(Ts("Cannot paste preset.", "Impossibile incollare il preset."));
 			});
 			break;
 
@@ -1965,8 +1974,8 @@ void AccessibleWindow::handleRackCtrlKey(WPARAM vk, bool shift) {
 				refreshRackView();
 				rackDirty = false;
 				setStatus(shift
-				          ? "Modulo \"" + sname + "\" duplicato (con cavi)."
-				          : "Modulo \"" + sname + "\" duplicato.");
+				          ? Ts("Module \"", "Modulo \"") + sname + Ts("\" duplicated (with cables).", "\" duplicato (con cavi).")
+				          : Ts("Module \"", "Modulo \"") + sname + Ts("\" duplicated.", "\" duplicato."));
 			});
 			break;
 	}
@@ -2014,8 +2023,8 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 		std::string  sname = mw->model ? mw->model->name : "?";
 		std::wstring name  = toWide(sname);
 		if (MessageBoxW(hwnd,
-		                (L"Rimuovere \"" + name + L"\"?").c_str(),
-		                L"Conferma", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+		                (T(L"Remove \"", L"Rimuovere \"") + name + L"\"?").c_str(),
+		                T(L"Confirm", L"Conferma"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
 			// Defer the deletion: removeAction() deletes the widget and its
 			// OpenGL framebuffer, which is unsafe from the message-pump
 			// reentrancy point this handler can run in. drainCommands() runs it
@@ -2030,7 +2039,7 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 				}
 				refreshRackView();
 				rackDirty = false;
-				setStatus("Modulo \"" + sname + "\" rimosso.");
+				setStatus(Ts("Module \"", "Modulo \"") + sname + Ts("\" removed.", "\" rimosso."));
 			});
 		}
 	}
@@ -2071,7 +2080,7 @@ void AccessibleWindow::handleLibraryEnter() {
 
 	selectedModel = reinterpret_cast<plugin::Model*>(tvi.lParam);
 	switchView(RACK);
-	setStatus("\"" + selectedModel->name + "\" selezionato — vai su [ Slot libero ] e premi Invio.");
+	setStatus("\"" + selectedModel->name + "\" " + Ts("selected — go to [ Free slot ] and press Enter.", "selezionato — vai su [ Slot libero ] e premi Invio."));
 }
 
 // ── Actions: params ───────────────────────────────────────────────────────────
@@ -2091,9 +2100,10 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 		pq->reset();
 	}
 	else if (vk == 'V') {
-		std::wstring prompt = L"Valore per «" + toWide(pq->name) + L"»:\n"
-		                      L"(Es: 440, C4, log2(8), dbtogain(-6))";
-		std::wstring text = showInputDialog(hwnd, L"Imposta valore",
+		std::wstring prompt = T(L"Value for «", L"Valore per «") + toWide(pq->name) +
+		                      T(L"»:\n(e.g.: 440, C4, log2(8), dbtogain(-6))",
+		                        L"»:\n(Es: 440, C4, log2(8), dbtogain(-6))");
+		std::wstring text = showInputDialog(hwnd, T(L"Set value", L"Imposta valore"),
 		                                    prompt, toWide(pq->getDisplayValueString()));
 		if (text.empty())
 			return;
@@ -2163,14 +2173,15 @@ void AccessibleWindow::handlePortEnter(bool isOutput) {
 		                         : currentModule->getInputInfo(portId);
 		std::string portName = info ? info->getName() : "";
 		std::string modName  = currentModule->model ? currentModule->model->name : "?";
-		setStatus("Connessione da \"" + portName + "\" di " + modName +
-		          " avviata. Seleziona porta di destinazione (Esc per annullare).");
+		setStatus(Ts("Connecting from \"", "Connessione da \"") + portName +
+		          Ts("\" on ", "\" di ") + modName +
+		          Ts(" started. Select destination port (Esc to cancel).", " avviata. Seleziona porta di destinazione (Esc per annullare)."));
 		switchView(RACK);
 	}
 	else {
 		// Complete connection
 		if (pendingCable.type == portType) {
-			setStatus("Porta incompatibile: un output deve collegarsi a un input.");
+			setStatus(Ts("Incompatible port: an output must connect to an input.", "Porta incompatibile: un output deve collegarsi a un input."));
 			return;
 		}
 
@@ -2189,7 +2200,7 @@ void AccessibleWindow::handlePortEnter(bool isOutput) {
 
 		std::string outName = outMod->model ? outMod->model->name : "?";
 		std::string inName  = inMod->model  ? inMod->model->name  : "?";
-		setStatus("Connesso: " + outName + " → " + inName + ".");
+		setStatus(Ts("Connected: ", "Connesso: ") + outName + " → " + inName + ".");
 		switchView(RACK);
 
 		// Defer the widget-tree mutation to a safe point (see drainCommands).
@@ -2258,12 +2269,12 @@ void AccessibleWindow::handlePortDelete(bool isOutput) {
 
 		auto cables = rack->getCompleteCablesOnPort(pw);
 		if (cables.empty()) {
-			setStatus("Nessun cavo da scollegare su questa porta.");
+			setStatus(Ts("No cable to disconnect on this port.", "Nessun cavo da scollegare su questa porta."));
 		}
 		else {
 			// Remove every cable on the port, with a single undo action.
 			history::ComplexAction* h = new history::ComplexAction;
-			h->name = "scollega cavo";
+			h->name = Ts("disconnect cable", "scollega cavo");
 			for (app::CableWidget* cw : cables) {
 				history::CableRemove* hr = new history::CableRemove;
 				hr->setCable(cw);
@@ -2272,7 +2283,7 @@ void AccessibleWindow::handlePortDelete(bool isOutput) {
 				delete cw;
 			}
 			APP->history->push(h);
-			setStatus("Cavo scollegato.");
+			setStatus(Ts("Cable disconnected.", "Cavo scollegato."));
 		}
 
 		refreshPortView(isOutput);
@@ -2339,7 +2350,7 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 						APP->event->setSelectedWidget(nullptr);
 					self->learningCell = nullptr;
 					self->learningLastText.clear();
-					self->setStatus("Apprendimento annullato.");
+					self->setStatus(Ts("Learn mode cancelled.", "Apprendimento annullato."));
 					return 0;
 				}
 				if (self->currentView == CONTEXT_MENU) {
@@ -2364,7 +2375,7 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				}
 				else if (self->pendingCable.active) {
 					self->pendingCable.active = false;
-					self->setStatus("Connessione annullata.");
+					self->setStatus(Ts("Connection cancelled.", "Connessione annullata."));
 				}
 				else if (self->currentView != RACK) {
 					self->switchView(RACK);
