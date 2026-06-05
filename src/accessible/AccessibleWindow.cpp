@@ -36,6 +36,10 @@
 #include <app/RackScrollWidget.hpp>
 #include <app/TipWindow.hpp>
 #include <ui/common.hpp>
+#include <app/LedDisplay.hpp>
+#include <ui/MenuItem.hpp>
+#include <ui/MenuOverlay.hpp>
+#include <widget/event.hpp>
 
 #include <algorithm>
 #include <string>
@@ -188,6 +192,19 @@ static math::Vec nextModulePos() {
 	}
 	pos.y = app::RACK_OFFSET.y;
 	return pos;
+}
+
+// Recursively walks a widget subtree to collect all LedDisplayChoice instances.
+// Does not recurse INTO a LedDisplayChoice (its own children are rendering details).
+static void collectDisplayCellsRec(widget::Widget* w,
+                                   std::vector<AccessibleWindow::DisplayCell>& out) {
+	if (auto* dc = dynamic_cast<app::LedDisplayChoice*>(w)) {
+		dc->step();
+		out.push_back({dc, toWide(dc->text.empty() ? "(display)" : dc->text)});
+		return;
+	}
+	for (widget::Widget* child : w->children)
+		collectDisplayCellsRec(child, out);
 }
 
 // Read the system clipboard as UTF-8. We talk to the Win32 clipboard directly
@@ -586,6 +603,23 @@ void AccessibleWindow::onTimer() {
 	}
 	if (announcerTicks > 0 && --announcerTicks == 0)
 		SetWindowTextW(announcer, L"");
+
+	// Tier B learn mode: poll the learning cell for value changes.
+	if (learningCell && APP && APP->event) {
+		if (APP->event->getSelectedWidget() != learningCell) {
+			// Deselected externally: cancel learn mode.
+			learningCell = nullptr;
+			learningLastText.clear();
+		}
+		else {
+			std::wstring newText = toWide(learningCell->text);
+			if (newText != learningLastText) {
+				learningLastText = newText;
+				setStatus("Valore aggiornato: " + toUtf8(newText) + ".");
+			}
+		}
+	}
+
 	refreshCurrentView();
 }
 
@@ -674,6 +708,7 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 		                (L"Rimuovere \"" + name + L"\"?").c_str(),
 		                L"Conferma", MB_YESNO | MB_ICONQUESTION) == IDYES) {
 			pushCommand([this, mw, sname]() {
+				cleanupCapturedMenu();
 				engine::Module* mod = mw->module;
 				mw->removeAction();
 				if (currentModule == mod) {
@@ -895,6 +930,173 @@ void AccessibleWindow::handleContextMenuKey() {
 	}
 }
 
+// ── Display cell navigation (D key) ──────────────────────────────────────────
+
+void AccessibleWindow::collectDisplayCells(app::ModuleWidget* mw) {
+	displayCells.clear();
+	if (!mw)
+		return;
+	for (widget::Widget* child : mw->children)
+		collectDisplayCellsRec(child, displayCells);
+}
+
+// Build ContextMenuItems from a Rack ui::Menu. Leaf items call doAction(false)
+// (fires onAction without closing the captured overlay). Submenu items push a new
+// level lazily (createChildMenu is called when the user navigates into the submenu,
+// not when the parent menu is built).
+std::vector<AccessibleWindow::ContextMenuItem> AccessibleWindow::buildItemsFromMenu(ui::Menu* menu) {
+	std::vector<ContextMenuItem> items;
+	for (widget::Widget* w : menu->children) {
+		auto* mi = dynamic_cast<ui::MenuItem*>(w);
+		if (!mi)
+			continue;
+
+		std::wstring label = toWide(mi->text);
+		if (!mi->rightText.empty()) {
+			if (mi->rightText.find(CHECKMARK_STRING) != std::string::npos)
+				label += L" ✓";
+			else if (mi->rightText.find(RIGHT_ARROW) != std::string::npos)
+				label += L" ▸";
+			else
+				label += L"  " + toWide(mi->rightText);
+		}
+
+		if (mi->disabled) {
+			label += L" (non disponibile)";
+			items.push_back({label, []() {}, false});
+			continue;
+		}
+
+		// Probe for submenu: createChildMenu() returns non-null for submenu items.
+		// We delete the probe immediately; a fresh one will be created on demand.
+		ui::Menu* probe = mi->createChildMenu();
+		bool hasSub = (probe != nullptr);
+		delete probe;
+
+		if (hasSub) {
+			items.push_back({label, [this, mi]() {
+				ui::Menu* sub = mi->createChildMenu();
+				if (!sub)
+					return;
+				ownedSubmenus.push_back(sub);
+				auto subItems = buildItemsFromMenu(sub);
+				menuStack.push_back(subItems);
+				contextItems = subItems;
+				ListView_DeleteAllItems(listContextMenu);
+				for (int i = 0; i < (int)contextItems.size(); i++)
+					lvAppendRow(listContextMenu, contextItems[i].label, (LPARAM)i);
+				lvFocusRow(listContextMenu, 0);
+			}, true});
+		}
+		else {
+			items.push_back({label, [this, mi]() {
+				mi->doAction(false);
+				cleanupCapturedMenu();
+			}, false});
+		}
+	}
+	return items;
+}
+
+// Fire the display cell's click, then fork: if a MenuOverlay appeared (Tier A)
+// capture it and show its items in the accessible CONTEXT_MENU. Otherwise
+// (Tier B) enter learn/select mode on the widget directly.
+void AccessibleWindow::openDisplayCell(DisplayCell cell) {
+	if (!APP || !APP->scene || !cell.choice)
+		return;
+
+	widget::Widget* lastBefore = APP->scene->children.empty() ? nullptr : APP->scene->children.back();
+	widget::Widget::ActionEvent eAction;
+	cell.choice->onAction(eAction);
+	widget::Widget* lastAfter = APP->scene->children.empty() ? nullptr : APP->scene->children.back();
+
+	if (lastAfter && lastAfter != lastBefore) {
+		auto* overlay = dynamic_cast<ui::MenuOverlay*>(lastAfter);
+		if (overlay) {
+			capturedOverlay = overlay;
+			ui::Menu* menu = nullptr;
+			for (widget::Widget* child : overlay->children) {
+				menu = dynamic_cast<ui::Menu*>(child);
+				if (menu)
+					break;
+			}
+			if (menu) {
+				auto items = buildItemsFromMenu(menu);
+				menuStack.push_back(items);
+				contextItems = items;
+				ListView_DeleteAllItems(listContextMenu);
+				for (int i = 0; i < (int)contextItems.size(); i++)
+					lvAppendRow(listContextMenu, contextItems[i].label, (LPARAM)i);
+				switchView(CONTEXT_MENU);
+				lvFocusRow(listContextMenu, 0, true);
+			}
+			else {
+				APP->scene->removeChild(overlay);
+				delete overlay;
+				capturedOverlay = nullptr;
+				setStatus("Errore: struttura del menu non riconosciuta.");
+			}
+			return;
+		}
+	}
+
+	// Tier B: no overlay appeared — enter learn/select mode.
+	if (!APP->event)
+		return;
+	APP->event->setSelectedWidget(cell.choice);
+	learningCell = cell.choice;
+	learningLastText = toWide(cell.choice->text);
+	setStatus("In apprendimento — premi il controllo MIDI. Spazio = toggle. Esc = annulla.");
+}
+
+// Remove the captured overlay from the scene and free all display-navigation state.
+void AccessibleWindow::cleanupCapturedMenu() {
+	for (ui::Menu* sub : ownedSubmenus)
+		delete sub;
+	ownedSubmenus.clear();
+
+	if (capturedOverlay) {
+		if (APP && APP->scene)
+			APP->scene->removeChild(capturedOverlay);
+		delete capturedOverlay;
+		capturedOverlay = nullptr;
+	}
+
+	menuStack.clear();
+	displayCells.clear();
+	learningCell = nullptr;
+	learningLastText.clear();
+}
+
+// Open the display-cell list for the current module (D key from RACK or PARAM).
+void AccessibleWindow::handleDisplayKey() {
+	if (!APP || !APP->scene || !APP->scene->rack || !currentModule)
+		return;
+	app::ModuleWidget* mw = APP->scene->rack->getModule(currentModule->id);
+	if (!mw)
+		return;
+
+	cleanupCapturedMenu();
+	collectDisplayCells(mw);
+
+	if (displayCells.empty()) {
+		setStatus("Nessun display cliccabile per questo modulo.");
+		return;
+	}
+
+	std::vector<ContextMenuItem> items;
+	for (auto& cell : displayCells) {
+		app::LedDisplayChoice* choice = cell.choice;
+		std::wstring label = cell.label;
+		items.push_back({label, [this, choice, label]() {
+			openDisplayCell({choice, label});
+		}, false});
+	}
+
+	menuStack.push_back(items);   // level 0 = display cell list
+	showContextMenu(items);        // sets previousView, shows CONTEXT_MENU
+}
+
 // ── Menu bar ─────────────────────────────────────────────────────────────────
 
 UINT AccessibleWindow::addMenuCmd(HMENU h, const std::wstring& label,
@@ -923,6 +1125,7 @@ void AccessibleWindow::refreshPopupChecks(HMENU popup) {
 
 void AccessibleWindow::reloadRackAfterMutation() {
 	// A patch load / undo / paste may have destroyed the modules these point at.
+	cleanupCapturedMenu();
 	currentModule   = nullptr;
 	lastParamModule = nullptr;
 	pendingCable    = PendingCable();
@@ -1745,6 +1948,7 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 			// reentrancy point this handler can run in. drainCommands() runs it
 			// from the main loop right after glfwPollEvents() instead.
 			pushCommand([this, mw, sname]() {
+				cleanupCapturedMenu();
 				engine::Module* mod = mw->module;
 				mw->removeAction();
 				if (currentModule == mod) {
@@ -2048,8 +2252,34 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				return 0;
 
 			case VK_ESCAPE:
+				// Cancel Tier B learn mode first, regardless of current view.
+				if (self->learningCell) {
+					if (APP && APP->event)
+						APP->event->setSelectedWidget(nullptr);
+					self->learningCell = nullptr;
+					self->learningLastText.clear();
+					self->setStatus("Apprendimento annullato.");
+					return 0;
+				}
 				if (self->currentView == CONTEXT_MENU) {
-					self->switchView(self->previousView);
+					if (self->menuStack.size() > 1) {
+						// Pop one level in display menu navigation.
+						if (!self->ownedSubmenus.empty()) {
+							delete self->ownedSubmenus.back();
+							self->ownedSubmenus.pop_back();
+						}
+						self->menuStack.pop_back();
+						self->contextItems = self->menuStack.back();
+						ListView_DeleteAllItems(self->listContextMenu);
+						for (int i = 0; i < (int)self->contextItems.size(); i++)
+							lvAppendRow(self->listContextMenu, self->contextItems[i].label, (LPARAM)i);
+						lvFocusRow(self->listContextMenu, 0);
+					}
+					else {
+						self->menuStack.clear();
+						self->cleanupCapturedMenu();
+						self->switchView(self->previousView);
+					}
 				}
 				else if (self->pendingCable.active) {
 					self->pendingCable.active = false;
@@ -2070,9 +2300,18 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 					case CONTEXT_MENU: {
 						int row = lvFocused(self->listContextMenu);
 						if (row >= 0 && row < (int)self->contextItems.size()) {
-							auto action = self->contextItems[row].action;
-							self->switchView(self->previousView);
-							action();
+							auto& item = self->contextItems[row];
+							if (item.isSubmenu) {
+								// Push a new menu level; stay in CONTEXT_MENU.
+								if (item.action)
+									item.action();
+							}
+							else {
+								auto action = item.action;
+								self->switchView(self->previousView);
+								if (action)
+									action();
+							}
 						}
 						return 0;
 					}
@@ -2134,6 +2373,12 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 					return 0;
 				}
 				break;
+			case 'D':
+				if (self->currentView == RACK || self->currentView == PARAM) {
+					self->handleDisplayKey();
+					return 0;
+				}
+				break;
 			case 'V':
 				if (self->currentView == PARAM) {
 					self->handleParamKey('V');
@@ -2151,6 +2396,14 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				break;
 
 			case VK_SPACE:
+				// Tier B learn mode toggle: Space selects/deselects the learning widget.
+				if (self->learningCell && APP && APP->event) {
+					if (APP->event->getSelectedWidget() == self->learningCell)
+						APP->event->setSelectedWidget(nullptr);
+					else
+						APP->event->setSelectedWidget(self->learningCell);
+					return 0;
+				}
 				if (self->currentView == PARAM) {
 					self->handleParamKey(VK_SPACE);
 					return 0;

@@ -19,6 +19,11 @@ struct Model;
 }
 namespace app {
 struct ModuleWidget;
+struct LedDisplayChoice;
+}
+namespace ui {
+struct MenuOverlay;
+struct Menu;
 }
 }
 
@@ -40,6 +45,15 @@ struct AccessibleWindow {
 	struct ContextMenuItem {
 		std::wstring          label;
 		std::function<void()> action;
+		bool                  isSubmenu; // if true, Enter pushes a new menu level (no switchView first)
+
+		ContextMenuItem(std::wstring l, std::function<void()> a, bool sub = false)
+			: label(std::move(l)), action(std::move(a)), isSubmenu(sub) {}
+	};
+
+	struct DisplayCell {
+		rack::app::LedDisplayChoice* choice;
+		std::wstring                 label;
 	};
 
 	HWND hwnd            = nullptr;
@@ -63,6 +77,14 @@ struct AccessibleWindow {
 	bool                  libraryLoaded    = false;
 	bool                  rackDirty        = true;
 	std::vector<ContextMenuItem> contextItems;
+
+	// ── Display cell navigation (D key) ───────────────────────────────────────
+	std::vector<DisplayCell>                  displayCells;
+	std::vector<std::vector<ContextMenuItem>> menuStack;       // stack of menu levels
+	rack::ui::MenuOverlay*                    capturedOverlay = nullptr;
+	std::vector<rack::ui::Menu*>              ownedSubmenus;   // submenus we created; deleted on pop/cleanup
+	rack::app::LedDisplayChoice*              learningCell    = nullptr;  // active Tier B learn target
+	std::wstring                              learningLastText;
 
 	// ── Native Win32 menu bar ──────────────────────────────────────────────────
 	// A real HMENU attached with SetMenu(). Windows handles Alt to enter the bar,
@@ -132,6 +154,12 @@ private:
 	void showContextMenu(std::vector<ContextMenuItem> items);
 	void buildModuleContextMenu(rack::app::ModuleWidget* mw);
 	void buildParamContextMenu(int paramId);
+
+	void collectDisplayCells(rack::app::ModuleWidget* mw);
+	std::vector<ContextMenuItem> buildItemsFromMenu(rack::ui::Menu* menu);
+	void openDisplayCell(DisplayCell cell);
+	void cleanupCapturedMenu();
+	void handleDisplayKey();
 
 	// ── Menu bar helpers ───────────────────────────────────────────────────────
 	void buildMenuBar();
