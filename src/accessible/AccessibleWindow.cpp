@@ -1813,6 +1813,15 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 		// Reset to default value (Ableton-style).
 		pq->reset();
 	}
+	else if (vk == 'V') {
+		std::wstring prompt = L"Valore per «" + toWide(pq->name) + L"»:\n"
+		                      L"(Es: 440, C4, log2(8), dbtogain(-6))";
+		std::wstring text = showInputDialog(hwnd, L"Imposta valore",
+		                                    prompt, toWide(pq->getDisplayValueString()));
+		if (text.empty())
+			return;
+		pq->setDisplayValueString(toUtf8(text));
+	}
 	else {
 		float cur  = pq->getValue();
 		float step = (pq->maxValue - pq->minValue) / 100.f;
@@ -2122,6 +2131,12 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 			case 'I':
 				if (self->currentView == RACK) {
 					self->handleRackKey('I');
+					return 0;
+				}
+				break;
+			case 'V':
+				if (self->currentView == PARAM) {
+					self->handleParamKey('V');
 					return 0;
 				}
 				break;
