@@ -82,6 +82,7 @@ struct AccessibleWindow {
 	std::vector<DisplayCell>                  displayCells;
 	std::vector<std::vector<ContextMenuItem>> menuStack;       // stack of menu levels
 	rack::ui::MenuOverlay*                    capturedOverlay = nullptr;
+	rack::ui::Menu*                          ownedRootMenu   = nullptr;  // detached menu holding a module's appendContextMenu() items
 	std::vector<rack::ui::Menu*>              ownedSubmenus;   // submenus we created; deleted on pop/cleanup
 	rack::app::LedDisplayChoice*              learningCell    = nullptr;  // active Tier B learn target
 	std::wstring                              learningLastText;
@@ -150,9 +151,11 @@ private:
 	void focusPortRow(bool isOutput, int portId);
 	void handleLibraryEnter();
 	void handleContextMenuKey();
+	void handleModuleSpecificContextMenuKey();
 
 	void showContextMenu(std::vector<ContextMenuItem> items);
 	void buildModuleContextMenu(rack::app::ModuleWidget* mw);
+	void buildModuleSpecificContextMenu(rack::app::ModuleWidget* mw);
 	void buildParamContextMenu(int paramId);
 
 	void collectDisplayCells(rack::app::ModuleWidget* mw);

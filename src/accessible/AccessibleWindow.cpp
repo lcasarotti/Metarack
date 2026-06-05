@@ -930,6 +930,57 @@ void AccessibleWindow::handleContextMenuKey() {
 	}
 }
 
+// Ctrl+Application key — Reaper-style separate context menu holding ONLY the
+// module's own options (the appendContextMenu() override: e.g. MIDI-to-CV's
+// Polyphony channels, Polyphony allocation Rotate/Reuse/Reset, CLK/N divider).
+void AccessibleWindow::handleModuleSpecificContextMenuKey() {
+	app::ModuleWidget* mw = nullptr;
+	if (currentView == RACK) {
+		int row = lvFocused(listRack);
+		if (row < 0)
+			return;
+		LPARAM lp = lvGetParam(listRack, row);
+		if (lp == 0)
+			return;
+		mw = reinterpret_cast<app::ModuleWidget*>(lp);
+	}
+	else if (currentModule && APP && APP->scene && APP->scene->rack) {
+		// PARAM/OUTPUT/INPUT: the menu still belongs to the focused module.
+		mw = APP->scene->rack->getModule(currentModule->id);
+	}
+	if (!mw)
+		return;
+	buildModuleSpecificContextMenu(mw);
+}
+
+void AccessibleWindow::buildModuleSpecificContextMenu(app::ModuleWidget* mw) {
+	if (!mw || !mw->module)
+		return;
+
+	cleanupCapturedMenu();
+
+	// Pour the module's own context-menu items into a detached ui::Menu, then read
+	// them with the same walker used for display menus — it already handles nested
+	// submenus (createChildMenu) and checkmarks/right-arrows. The items' lambdas
+	// mutate the module directly, so no MenuOverlay in the scene is needed.
+	ui::Menu* extra = new ui::Menu;
+	mw->appendContextMenu(extra);
+	auto items = buildItemsFromMenu(extra);
+
+	if (items.empty()) {
+		delete extra;
+		setStatus("Nessuna opzione specifica per questo modulo.");
+		return;
+	}
+
+	// Keep the detached menu alive while the user navigates: the item lambdas hold
+	// pointers into its children, and submenus are built on demand. Freed by
+	// cleanupCapturedMenu() when the menu closes.
+	ownedRootMenu = extra;
+	menuStack.push_back(items);    // level 0 = module-specific list
+	showContextMenu(items);        // sets previousView, shows CONTEXT_MENU
+}
+
 // ── Display cell navigation (D key) ──────────────────────────────────────────
 
 void AccessibleWindow::collectDisplayCells(app::ModuleWidget* mw) {
@@ -1060,6 +1111,11 @@ void AccessibleWindow::cleanupCapturedMenu() {
 			APP->scene->removeChild(capturedOverlay);
 		delete capturedOverlay;
 		capturedOverlay = nullptr;
+	}
+
+	if (ownedRootMenu) {
+		delete ownedRootMenu;
+		ownedRootMenu = nullptr;
 	}
 
 	menuStack.clear();
@@ -2234,8 +2290,16 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 	// WM_CONTEXTMENU is sent by the system for both the Application key and
 	// Shift+F10 — the standard screen-reader shortcut for context menus.
 	if (msg == WM_CONTEXTMENU) {
-		if (self->currentView != CONTEXT_MENU)
-			self->handleContextMenuKey();
+		// Ctrl+Application key opens the module-specific menu (Reaper-style),
+		// the plain Application key / Shift+F10 the generic one. Ctrl+Apps still
+		// fires WM_CONTEXTMENU, so the modifier is read here from the key state.
+		if (self->currentView != CONTEXT_MENU) {
+			bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+			if (ctrl)
+				self->handleModuleSpecificContextMenuKey();
+			else
+				self->handleContextMenuKey();
+		}
 		return 0;
 	}
 
