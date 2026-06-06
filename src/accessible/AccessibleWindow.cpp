@@ -2099,7 +2099,7 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 		// Reset to default value (Ableton-style).
 		pq->reset();
 	}
-	else if (vk == 'V') {
+	else if (vk == 'V' || vk == VK_RETURN) {
 		std::wstring prompt = T(L"Value for «", L"Valore per «") + toWide(pq->name) +
 		                      T(L"»:\n(e.g.: 440, C4, log2(8), dbtogain(-6))",
 		                        L"»:\n(Es: 440, C4, log2(8), dbtogain(-6))");
@@ -2387,6 +2387,7 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				switch (self->currentView) {
 					case RACK:    self->handleRackKey(VK_RETURN);      return 0;
 					case LIBRARY: self->handleLibraryEnter();           return 0;
+					case PARAM:   self->handleParamKey(VK_RETURN);     return 0;
 					case OUTPUT:  self->handlePortEnter(true);          return 0;
 					case INPUT:   self->handlePortEnter(false);         return 0;
 					case CONTEXT_MENU: {
@@ -2471,13 +2472,6 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 					return 0;
 				}
 				break;
-			case 'V':
-				if (self->currentView == PARAM) {
-					self->handleParamKey('V');
-					return 0;
-				}
-				break;
-
 			// Param value adjustment (Left/Right only; Up/Down navigate rows via default)
 			case VK_LEFT:
 			case VK_RIGHT:
