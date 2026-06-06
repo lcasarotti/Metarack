@@ -2320,12 +2320,10 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 		pq->setValue(next);
 	}
 
-	// Update the visible value cell, then re-fire EVENT_OBJECT_FOCUS on the row so
-	// the screen reader re-reads it. Verbose (reads full row) but reliably audible.
-	// TODO: announce ONLY the value (UIA notification or custom IAccessible proxy).
+	// Update only the visible value cell — do NOT re-fire EVENT_OBJECT_FOCUS here,
+	// as continuous NVDA announcements would drown out the synthesizer audio.
 	std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
 	lvSetSubtext(listParam, row, 1, valW);
-	lvFocusRow(listParam, row);
 }
 
 // ── Actions: ports / cables ──────────────────────────────────────────────────
