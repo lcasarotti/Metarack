@@ -2497,22 +2497,38 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 
 		// Global Ctrl shortcuts (work from any view).
 		if (ctrl) {
-			if (wp == 'R') {
-				// If already in RACK, treat as explicit refresh so external
-				// changes (module dragged via mouse) become visible.
-				if (self->currentView == RACK)
-					self->rackDirty = true;
-				self->switchView(RACK);
-				return 0;
-			}
-			if (wp == 'L') {
-				self->switchView(LIBRARY);
+			if (wp == 'N') {
+				self->pushCommand([self]() {
+					APP->patch->loadTemplateDialog();
+					self->reloadRackAfterMutation();
+				});
 				return 0;
 			}
 			if (wp == 'O') {
-				self->pushCommand([self]() {
-					APP->patch->loadDialog();
-					self->reloadRackAfterMutation();
+				if (shift) {
+					self->pushCommand([self]() {
+						APP->patch->revertDialog();
+						self->reloadRackAfterMutation();
+					});
+				}
+				else {
+					self->pushCommand([self]() {
+						APP->patch->loadDialog();
+						self->reloadRackAfterMutation();
+					});
+				}
+				return 0;
+			}
+			if (wp == 'Q') {
+				self->pushCommand([]() {
+					APP->window->close();
+				});
+				return 0;
+			}
+			if (wp == 'R') {
+				self->pushCommand([]() {
+					if (APP->scene->rack->hasSelection())
+						APP->scene->rack->randomizeSelectionAction();
 				});
 				return 0;
 			}
@@ -2665,6 +2681,22 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				}
 				break;
 
+			case 'R':
+				// Shift+R: go to RACK view (Ctrl+R is now randomize selection).
+				if (shift) {
+					if (self->currentView == RACK)
+						self->rackDirty = true;
+					self->switchView(RACK);
+					return 0;
+				}
+				break;
+			case 'L':
+				// Shift+L: go to LIBRARY view (Ctrl+L freed for future use).
+				if (shift) {
+					self->switchView(LIBRARY);
+					return 0;
+				}
+				break;
 			case 'P':
 				if (self->currentView == RACK) {
 					self->handleRackKey('P');
