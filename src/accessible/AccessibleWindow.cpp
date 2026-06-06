@@ -441,7 +441,7 @@ void AccessibleWindow::onCreate() {
 	                              hwnd, (HMENU)(INT_PTR)ID_LIBRARY, hInst, nullptr);
 
 	// Param ListView
-	listParam = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	listParam = CreateWindowExW(0, WC_LISTVIEWW, T(L"Parameters", L"Parametri"),
 	                            lvStyle,
 	                            0, 0, w, listH,
 	                            hwnd, (HMENU)(INT_PTR)ID_PARAM, hInst, nullptr);
@@ -450,7 +450,7 @@ void AccessibleWindow::onCreate() {
 	lvAddColumn(listParam, 1, T(L"Value", L"Valore"), 210);
 
 	// Output ListView
-	listOutput = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	listOutput = CreateWindowExW(0, WC_LISTVIEWW, T(L"Outputs", L"Uscite"),
 	                             lvStyle,
 	                             0, 0, w, listH,
 	                             hwnd, (HMENU)(INT_PTR)ID_OUTPUT, hInst, nullptr);
@@ -459,7 +459,7 @@ void AccessibleWindow::onCreate() {
 	lvAddColumn(listOutput, 1, T(L"State", L"Stato"), 210);
 
 	// Input ListView
-	listInput = CreateWindowExW(0, WC_LISTVIEWW, L"",
+	listInput = CreateWindowExW(0, WC_LISTVIEWW, T(L"Inputs", L"Ingressi"),
 	                            lvStyle,
 	                            0, 0, w, listH,
 	                            hwnd, (HMENU)(INT_PTR)ID_INPUT, hInst, nullptr);
@@ -2495,6 +2495,23 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 					return 0;
 				}
 				break;
+
+			case VK_TAB: {
+				// Cycle between the three module-detail views without going back to
+				// the rack: Tab goes PARAM→OUTPUT→INPUT→PARAM, Shift+Tab reverses.
+				// Only active when a module is already open (currentModule set).
+				static const View tabCycle[] = { PARAM, OUTPUT, INPUT };
+				for (int i = 0; i < 3; i++) {
+					if (self->currentView == tabCycle[i]) {
+						if (!self->currentModule)
+							return 0;
+						int next = shift ? (i + 2) % 3 : (i + 1) % 3;
+						self->switchView(tabCycle[next]);
+						return 0;
+					}
+				}
+				break;
+			}
 
 			case VK_F1:
 				// Open the Rack manual in the system browser (same as F1 in the
