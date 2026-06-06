@@ -56,6 +56,16 @@ struct AccessibleWindow {
 		std::wstring                 label;
 	};
 
+	// One "[ Free slot ]" per rack row. item = its index in listRack; (gridX, gridY)
+	// is the grid cell a new module would take there (just past the row's rightmost
+	// module). Rebuilt by refreshRackView(); read when the user adds on a free slot.
+	struct FreeSlotTarget {
+		int item;
+		int gridX;
+		int gridY;
+	};
+	std::vector<FreeSlotTarget> freeSlotTargets;
+
 	HWND hwnd            = nullptr;
 	HWND listRack        = nullptr;
 	HWND treeLibrary     = nullptr;
@@ -177,10 +187,18 @@ private:
 	// (patch load, undo/redo, paste); clears now-dangling module pointers.
 	void reloadRackAfterMutation();
 
-	void placeModule(rack::plugin::Model* model);
-	// Insert a new module from the JSON currently on the system clipboard,
-	// placed at the end of the row (mirrors Ctrl+V over empty rack space).
-	void pasteModuleFromClipboard();
+	// Place a new module at grid cell (gridX, gridY) — the target carried by the
+	// free slot the user activated, so modules land on the focused row.
+	void placeModule(rack::plugin::Model* model, int gridX, int gridY);
+	// Insert a new module from the JSON currently on the system clipboard, at the
+	// given grid cell (the focused free slot's target).
+	void pasteModuleFromClipboard(int gridX, int gridY);
+	// Ctrl+Enter on a focused module: move it to a brand-new row below the lowest
+	// existing one (the keyboard equivalent of dragging a module down in the GUI).
+	void moveFocusedModuleToNewRow();
+	// Look up the (gridX, gridY) target of the free-slot list item at `item`.
+	// Returns false (and 0,0) if that item isn't a known free slot.
+	bool freeSlotTargetForItem(int item, int& gridX, int& gridY);
 };
 
 

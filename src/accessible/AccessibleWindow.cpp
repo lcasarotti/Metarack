@@ -187,19 +187,11 @@ static void lvFocusRow(HWND lv, int row, bool announce = true) {
 		NotifyWinEvent(EVENT_OBJECT_FOCUS, lv, OBJID_CLIENT, row + 1);
 }
 
-// Position for a newly inserted module: just past the rightmost existing module,
-// so inserts land in a tidy left-to-right row. Shared by placeModule() and
-// pasteModuleFromClipboard().
-static math::Vec nextModulePos() {
-	auto existing = APP->scene->rack->getModules();
-	math::Vec pos = app::RACK_OFFSET;
-	for (app::ModuleWidget* e : existing) {
-		float right = e->box.pos.x + e->box.size.x;
-		if (right > pos.x)
-			pos.x = right + app::RACK_GRID_WIDTH;
-	}
-	pos.y = app::RACK_OFFSET.y;
-	return pos;
+// Pixel top-left of a grid cell, mirroring ModuleWidget::setGridPosition().
+// Inserts target a cell (carried by the activated free slot) rather than always
+// the end of row 0, so modules land on whichever row the user is on.
+static math::Vec gridToPixel(int gridX, int gridY) {
+	return math::Vec(gridX, gridY) * app::RACK_GRID_SIZE + app::RACK_OFFSET;
 }
 
 // Recursively walks a widget subtree to collect all LedDisplayChoice instances.
@@ -437,15 +429,16 @@ void AccessibleWindow::onCreate() {
 	DWORD lvStyle = WS_CHILD | WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS;
 	DWORD lvEx    = LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES;
 
-	// Rack ListView
+	// Rack ListView — icon view (not report) so the modules form a 2D spatial grid
+	// that mirrors the physical rack: items are positioned manually in
+	// refreshRackView() from each module's grid coordinate, so Left/Right move
+	// within a row and Up/Down between rows. LVS_AUTOARRANGE is deliberately NOT
+	// set: it would reflow items by window width and clobber our positions.
+	DWORD rackStyle = WS_CHILD | WS_BORDER | WS_TABSTOP | LVS_ICON | LVS_SINGLESEL | LVS_SHOWSELALWAYS;
 	listRack = CreateWindowExW(0, WC_LISTVIEWW, L"",
-	                           lvStyle | WS_VISIBLE,
+	                           rackStyle | WS_VISIBLE,
 	                           0, 0, w, listH,
 	                           hwnd, (HMENU)(INT_PTR)ID_RACK, hInst, nullptr);
-	ListView_SetExtendedListViewStyle(listRack, lvEx);
-	lvAddColumn(listRack, 0, T(L"Module", L"Modulo"), 230);
-	lvAddColumn(listRack, 1, L"Manufacturer", 180);
-	lvAddColumn(listRack, 2, L"HP", 60);
 
 	// Library TreeView
 	treeLibrary = CreateWindowExW(0, WC_TREEVIEWW, L"",
@@ -1850,25 +1843,86 @@ void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule) {
 
 	ListView_DeleteAllItems(lv);
 
+	// Order modules the way they sit in the physical rack: top-to-bottom by row
+	// (grid y), then left-to-right within a row (grid x). This same ordering also
+	// drives the visual grid positions below, so the list mirrors the real layout.
 	auto modules = APP->scene->rack->getModules();
 	std::sort(modules.begin(), modules.end(), [](app::ModuleWidget * a, app::ModuleWidget * b) {
-		return a->box.pos.x < b->box.pos.x;
+		math::Vec ga = a->getGridPosition();
+		math::Vec gb = b->getGridPosition();
+		if ((int)ga.y != (int)gb.y)
+			return ga.y < gb.y;
+		return ga.x < gb.x;
 	});
+
+	// Icon spacing defines our grid step: place item (col, visRow) at
+	// (col*stepX, visRow*stepY) so the control's own cell size lines everything up.
+	DWORD spacing = ListView_GetItemSpacing(lv, FALSE);
+	int stepX = LOWORD(spacing);
+	int stepY = HIWORD(spacing);
+
+	freeSlotTargets.clear();
+
+	// Walk the sorted modules, emitting one visual row per distinct grid y. Each
+	// row is closed with its own "[ Free slot ]" (lParam == 0) placed just past the
+	// rightmost module, whose grid target we remember so the user can add a module
+	// to that specific row.
+	int  visRow  = -1, col = 0; // ++ on first row → 0
+	int  curGy   = 0;     // grid y of the row being built
+	int  rowMaxRight = 0; // grid x just past the rightmost module of that row
+	bool inRow   = false;
+
+	// Spatial position spoken by NVDA, appended to each item's label. Sequential
+	// 1-based position within the row (not HP), e.g. " — row 1, slot 3".
+	auto coordSuffix = [](int rowIdx1, int slotIdx1) -> std::wstring {
+		std::wstring s = T(L" — row ", L" — fila ");
+		s += std::to_wstring(rowIdx1);
+		s += T(L", slot ", L", slot ");
+		s += std::to_wstring(slotIdx1);
+		return s;
+	};
+
+	auto closeRowWithFreeSlot = [&]() {
+		if (!inRow)
+			return;
+		std::wstring label = T(L"[ Free slot ]", L"[ Slot libero ]") + coordSuffix(visRow + 1, col + 1);
+		int item = lvAppendRow(lv, label, 0);
+		ListView_SetItemPosition(lv, item, col * stepX, visRow * stepY);
+		freeSlotTargets.push_back({item, rowMaxRight, curGy});
+	};
 
 	for (app::ModuleWidget* mw : modules) {
 		if (!mw || !mw->model)
 			continue;
-		int  hp    = (int)(mw->box.size.x / app::RACK_GRID_WIDTH + 0.5f);
-		int  row   = lvAppendRow(lv, toWide(mw->model->name), (LPARAM)mw);
-		std::wstring brand = mw->model->plugin ? toWide(mw->model->plugin->getBrand()) : L"";
-		lvSetSubtext(lv, row, 1, brand);
-		lvSetSubtext(lv, row, 2, std::to_wstring(hp));
-	}
+		math::Vec gpos = mw->getGridPosition();
+		int gy = (int)gpos.y;
+		if (!inRow || gy != curGy) {
+			closeRowWithFreeSlot();   // finish the previous row first
+			visRow++;
+			col = 0;
+			curGy = gy;
+			rowMaxRight = 0;
+			inRow = true;
+		}
 
-	// Free slot (lParam == 0 marks it)
-	int freeRow = lvAppendRow(lv, T(L"[ Free slot ]", L"[ Slot libero ]"), 0);
-	lvSetSubtext(lv, freeRow, 1, L"");
-	lvSetSubtext(lv, freeRow, 2, L"—");
+		std::wstring label = toWide(mw->model->name) + coordSuffix(visRow + 1, col + 1);
+		int item = lvAppendRow(lv, label, (LPARAM)mw);
+		ListView_SetItemPosition(lv, item, col * stepX, visRow * stepY);
+		col++;
+
+		int right = (int)gpos.x + (int)mw->getGridSize().x;
+		if (right > rowMaxRight)
+			rowMaxRight = right;
+	}
+	closeRowWithFreeSlot();   // last row
+
+	// Empty rack: still offer one free slot at the origin so the user can add.
+	if (!inRow) {
+		std::wstring label = T(L"[ Free slot ]", L"[ Slot libero ]") + coordSuffix(1, 1);
+		int item = lvAppendRow(lv, label, 0);
+		ListView_SetItemPosition(lv, item, 0, 0);
+		freeSlotTargets.push_back({item, 0, 0});
+	}
 
 	// Restore focus: find the item with the same lParam, or default to row 0
 	int count = ListView_GetItemCount(lv);
@@ -1995,7 +2049,74 @@ void AccessibleWindow::refreshPortView(bool isOutput) {
 
 // ── Actions: rack ─────────────────────────────────────────────────────────────
 
-void AccessibleWindow::placeModule(plugin::Model* model) {
+bool AccessibleWindow::freeSlotTargetForItem(int item, int& gridX, int& gridY) {
+	for (const FreeSlotTarget& f : freeSlotTargets) {
+		if (f.item == item) {
+			gridX = f.gridX;
+			gridY = f.gridY;
+			return true;
+		}
+	}
+	gridX = 0;
+	gridY = 0;
+	return false;
+}
+
+// Ctrl+Enter: drop the focused module onto a brand-new row, one grid row below the
+// lowest existing module (left edge). This is the keyboard counterpart of dragging
+// a module down past the bottom row in the standard GUI — it's how the user grows
+// the patch into multiple rows. Undoable via history::ModuleMove.
+void AccessibleWindow::moveFocusedModuleToNewRow() {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+	int row = lvFocused(listRack);
+	if (row < 0)
+		return;
+	LPARAM lp = lvGetParam(listRack, row);
+	if (lp == 0) {
+		setStatus(Ts("Free slot: no module to move.", "Slot libero: nessun modulo da spostare."));
+		return;
+	}
+	auto* mw = reinterpret_cast<app::ModuleWidget*>(lp);
+
+	// Defer the widget-tree mutation to the safe drain point (see drainCommands).
+	pushCommand([this, mw]() {
+		app::RackWidget* rack = APP->scene->rack;
+
+		// New row = one below the lowest existing module's grid row.
+		bool any = false;
+		int maxGy = 0;
+		for (app::ModuleWidget* m : rack->getModules()) {
+			int gy = (int)m->getGridPosition().y;
+			if (!any || gy > maxGy) {
+				maxGy = gy;
+				any = true;
+			}
+		}
+		if (!any)
+			return;
+		int newGy = maxGy + 1;
+
+		math::Vec oldPos = mw->box.pos;
+		math::Vec target = gridToPixel(0, newGy);
+		// The new row is empty, so requestModulePos succeeds; force-place as a guard.
+		if (!rack->requestModulePos(mw, target))
+			rack->setModulePosForce(mw, target);
+
+		// Make the move undoable, like a GUI drag.
+		history::ModuleMove* h = new history::ModuleMove;
+		h->moduleId = mw->module->id;
+		h->oldPos   = oldPos;
+		h->newPos   = mw->box.pos;
+		APP->history->push(h);
+
+		refreshRackView(mw);
+		rackDirty = false;
+		setStatus(Ts("Module moved to a new row.", "Modulo spostato su una nuova fila."));
+	});
+}
+
+void AccessibleWindow::placeModule(plugin::Model* model, int gridX, int gridY) {
 	if (!model || !APP || !APP->scene || !APP->scene->rack)
 		return;
 
@@ -2020,7 +2141,7 @@ void AccessibleWindow::placeModule(plugin::Model* model) {
 		return;
 	}
 
-	APP->scene->rack->setModulePosNearest(mw, nextModulePos());
+	APP->scene->rack->setModulePosNearest(mw, gridToPixel(gridX, gridY));
 	APP->scene->rack->addModule(mw);
 
 	// Load the module's default preset, like the native browser does.
@@ -2038,7 +2159,7 @@ void AccessibleWindow::placeModule(plugin::Model* model) {
 	rackDirty = false;
 }
 
-void AccessibleWindow::pasteModuleFromClipboard() {
+void AccessibleWindow::pasteModuleFromClipboard(int gridX, int gridY) {
 	if (!APP || !APP->scene || !APP->scene->rack)
 		return;
 
@@ -2089,7 +2210,7 @@ void AccessibleWindow::pasteModuleFromClipboard() {
 		return;
 	}
 
-	APP->scene->rack->setModulePosNearest(mw, nextModulePos());
+	APP->scene->rack->setModulePosNearest(mw, gridToPixel(gridX, gridY));
 	APP->scene->rack->addModule(mw);
 
 	history::ModuleAdd* ha = new history::ModuleAdd;
@@ -2113,10 +2234,13 @@ void AccessibleWindow::handleRackCtrlKey(WPARAM vk, bool shift) {
 	// Free slot ([ Slot libero ], lParam == 0): only paste-as-new applies here,
 	// mirroring Ctrl+V over empty rack space in the standard GUI.
 	if (lp == 0) {
-		if (vk == 'V')
-			pushCommand([this]() {
-			pasteModuleFromClipboard();
-		});
+		if (vk == 'V') {
+			int gx = 0, gy = 0;
+			freeSlotTargetForItem(row, gx, gy);
+			pushCommand([this, gx, gy]() {
+				pasteModuleFromClipboard(gx, gy);
+			});
+		}
 		return;
 	}
 
@@ -2174,9 +2298,12 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 			if (selectedModel) {
 				plugin::Model* model = selectedModel;
 				selectedModel = nullptr;
-				// Defer the widget-tree mutation to a safe point (see drainCommands).
-				pushCommand([this, model]() {
-					placeModule(model);
+				// Add on the row whose free slot is focused (captured by value so the
+				// deferred command isn't affected by a later list rebuild).
+				int gx = 0, gy = 0;
+				freeSlotTargetForItem(row, gx, gy);
+				pushCommand([this, model, gx, gy]() {
+					placeModule(model, gx, gy);
 				});
 			}
 			else {
@@ -2569,6 +2696,14 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 		if (ctrl && self->currentView == RACK &&
 		    (wp == 'C' || wp == 'V' || wp == 'D')) {
 			self->handleRackCtrlKey(wp, shift);
+			return 0;
+		}
+
+		// Ctrl+Enter in RACK: move the focused module to a new row (grows the patch
+		// into multiple rows). Must be caught before the plain VK_RETURN below, which
+		// would otherwise open the module's PARAM view.
+		if (ctrl && self->currentView == RACK && wp == VK_RETURN) {
+			self->moveFocusedModuleToNewRow();
 			return 0;
 		}
 
