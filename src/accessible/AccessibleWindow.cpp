@@ -2318,6 +2318,22 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 		bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
+		// Global Ctrl shortcuts (work from any view).
+		if (ctrl) {
+			if (wp == 'R') {
+				// If already in RACK, treat as explicit refresh so external
+				// changes (module dragged via mouse) become visible.
+				if (self->currentView == RACK)
+					self->rackDirty = true;
+				self->switchView(RACK);
+				return 0;
+			}
+			if (wp == 'L') {
+				self->switchView(LIBRARY);
+				return 0;
+			}
+		}
+
 		// Ctrl-based clipboard / duplicate shortcuts, only in the RACK list.
 		// Mirrors the standard GUI: Ctrl+C copy, Ctrl+V paste, Ctrl+D duplicate,
 		// Ctrl+Shift+D duplicate with cables. Without Ctrl these letters fall
@@ -2329,19 +2345,6 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 		}
 
 		switch (wp) {
-
-			// Global view shortcuts
-			case 'R':
-				// If already in RACK, treat as explicit refresh request so
-				// external changes (module dragged via mouse) become visible.
-				if (self->currentView == RACK)
-					self->rackDirty = true;
-				self->switchView(RACK);
-				return 0;
-
-			case 'L':
-				self->switchView(LIBRARY);
-				return 0;
 
 			case VK_ESCAPE:
 				// Cancel Tier B learn mode first, regardless of current view.
