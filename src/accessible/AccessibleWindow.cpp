@@ -2509,6 +2509,43 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				self->switchView(LIBRARY);
 				return 0;
 			}
+			if (wp == 'O') {
+				self->pushCommand([self]() {
+					APP->patch->loadDialog();
+					self->reloadRackAfterMutation();
+				});
+				return 0;
+			}
+			if (wp == 'S') {
+				if (shift)
+					self->pushCommand([]() {
+					APP->patch->saveAsDialog();
+				});
+				else
+					self->pushCommand([]() {
+					APP->patch->saveDialog();
+				});
+				return 0;
+			}
+			if (wp == 'Z') {
+				if (shift) {
+					self->pushCommand([self]() {
+						if (APP->history->canRedo()) {
+							APP->history->redo();
+							self->reloadRackAfterMutation();
+						}
+					});
+				}
+				else {
+					self->pushCommand([self]() {
+						if (APP->history->canUndo()) {
+							APP->history->undo();
+							self->reloadRackAfterMutation();
+						}
+					});
+				}
+				return 0;
+			}
 		}
 
 		// Ctrl-based clipboard / duplicate shortcuts, only in the RACK list.
