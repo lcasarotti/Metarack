@@ -305,6 +305,9 @@ void AccessibleWindow::drainCommands() {
 		fn();
 }
 
+// Custom message posted by the background login thread when it finishes.
+#define WM_LOGIN_DONE (WM_USER + 1)
+
 // ── WndProc ───────────────────────────────────────────────────────────────────
 
 LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -373,6 +376,17 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 				else if (popup == self->popupLibrary)
 					self->rebuildLibraryPopup();
 				self->refreshPopupChecks(popup);
+			}
+			return 0;
+		case WM_LOGIN_DONE:
+			// Background login thread finished — update status bar.
+			if (self) {
+				if (library::isLoggedIn())
+					self->setStatus(Ts("Signed in to VCV Library.", "Accesso alla libreria VCV effettuato."));
+				else {
+					std::string err = library::loginStatus;
+					self->setStatus(err.empty() ? Ts("Sign-in failed.", "Accesso fallito.") : err);
+				}
 			}
 			return 0;
 		case WM_CLOSE:
@@ -870,6 +884,158 @@ static std::wstring showInputDialog(HWND parent, const std::wstring& title,
 	return d.ok ? d.result : std::wstring{};
 }
 
+// ── Login dialog ─────────────────────────────────────────────────────────────
+
+struct LoginDlgData {
+	std::wstring email;
+	std::wstring password;
+	bool ok = false;
+};
+
+static INT_PTR CALLBACK loginDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+	switch (msg) {
+		case WM_INITDIALOG: {
+			SetWindowLongPtrW(dlg, GWLP_USERDATA, lp);
+			SetDlgItemTextW(dlg, 1001, T(L"Email:", L"Email:"));
+			SetDlgItemTextW(dlg, 1003, T(L"Password:", L"Password:"));
+			SetFocus(GetDlgItem(dlg, 1002));
+			return FALSE;
+		}
+		case WM_COMMAND: {
+			auto* d = reinterpret_cast<LoginDlgData*>(GetWindowLongPtrW(dlg, GWLP_USERDATA));
+			if (LOWORD(wp) == IDOK) {
+				int elen = GetWindowTextLengthW(GetDlgItem(dlg, 1002));
+				d->email.resize(elen);
+				if (elen > 0)
+					GetWindowTextW(GetDlgItem(dlg, 1002), &d->email[0], elen + 1);
+
+				int plen = GetWindowTextLengthW(GetDlgItem(dlg, 1004));
+				d->password.resize(plen);
+				if (plen > 0)
+					GetWindowTextW(GetDlgItem(dlg, 1004), &d->password[0], plen + 1);
+
+				d->ok = true;
+				EndDialog(dlg, IDOK);
+			}
+			else if (LOWORD(wp) == IDCANCEL) {
+				EndDialog(dlg, IDCANCEL);
+			}
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+// Builds a DLGTEMPLATE in memory for the login dialog: email label + edit,
+// password label + edit (ES_PASSWORD), Sign in + Cancel buttons.
+static std::vector<BYTE> buildLoginDlgTemplate(const std::wstring& title) {
+	std::vector<BYTE> buf;
+	buf.reserve(768);
+
+	auto writeW = [&](WORD w) {
+		buf.push_back((BYTE)(w & 0xFF));
+		buf.push_back((BYTE)(w >> 8));
+	};
+	auto writeD = [&](DWORD d) {
+		buf.push_back((BYTE)(d & 0xFF));
+		buf.push_back((BYTE)((d >> 8) & 0xFF));
+		buf.push_back((BYTE)((d >> 16) & 0xFF));
+		buf.push_back((BYTE)((d >> 24) & 0xFF));
+	};
+	auto writeWStr = [&](const std::wstring & s) {
+		for (wchar_t c : s)
+			writeW((WORD)c);
+		writeW(0);
+	};
+	auto align4 = [&]() {
+		while (buf.size() % 4 != 0)
+			buf.push_back(0);
+	};
+
+	// DLGTEMPLATE header — 6 controls
+	writeD(DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU);
+	writeD(0);
+	writeW(6);         // cdit
+	writeW(0); writeW(0); writeW(220); writeW(100);
+	writeW(0);         // no menu
+	writeW(0);         // default window class
+	writeWStr(title);
+	writeW(8);         // font point size
+	writeWStr(L"MS Shell Dlg");
+
+	// Item 1: Email label (id 1001)
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | SS_LEFT);
+	writeD(0);
+	writeW(7); writeW(7); writeW(206); writeW(10);
+	writeW(1001);
+	writeW(0xFFFF); writeW(0x0082);
+	writeWStr(T(L"Email:", L"Email:"));
+	writeW(0);
+
+	// Item 2: Email edit (id 1002)
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL);
+	writeD(0);
+	writeW(7); writeW(19); writeW(206); writeW(14);
+	writeW(1002);
+	writeW(0xFFFF); writeW(0x0081);
+	writeWStr(L"");
+	writeW(0);
+
+	// Item 3: Password label (id 1003)
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | SS_LEFT);
+	writeD(0);
+	writeW(7); writeW(38); writeW(206); writeW(10);
+	writeW(1003);
+	writeW(0xFFFF); writeW(0x0082);
+	writeWStr(T(L"Password:", L"Password:"));
+	writeW(0);
+
+	// Item 4: Password edit (id 1004, ES_PASSWORD)
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD);
+	writeD(0);
+	writeW(7); writeW(50); writeW(206); writeW(14);
+	writeW(1004);
+	writeW(0xFFFF); writeW(0x0081);
+	writeWStr(L"");
+	writeW(0);
+
+	// Item 5: Sign in button (IDOK)
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON);
+	writeD(0);
+	writeW(60); writeW(72); writeW(50); writeW(14);
+	writeW((WORD)IDOK);
+	writeW(0xFFFF); writeW(0x0080);
+	writeWStr(T(L"Sign in", L"Accedi"));
+	writeW(0);
+
+	// Item 6: Cancel button (IDCANCEL)
+	align4();
+	writeD(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON);
+	writeD(0);
+	writeW(116); writeW(72); writeW(50); writeW(14);
+	writeW((WORD)IDCANCEL);
+	writeW(0xFFFF); writeW(0x0080);
+	writeWStr(T(L"Cancel", L"Annulla"));
+	writeW(0);
+
+	return buf;
+}
+
+static LoginDlgData showLoginDialog(HWND parent) {
+	LoginDlgData d;
+	auto tmpl = buildLoginDlgTemplate(T(L"Sign in to VCV Library", L"Accedi alla libreria VCV"));
+	HINSTANCE hInst = (HINSTANCE)GetModuleHandleW(nullptr);
+	DialogBoxIndirectParamW(hInst,
+	                        reinterpret_cast<LPCDLGTEMPLATEW>(tmpl.data()),
+	                        parent, loginDlgProc, (LPARAM)&d);
+	return d;
+}
+
 // ── Parameter context menu ────────────────────────────────────────────────────
 
 void AccessibleWindow::buildParamContextMenu(int paramId) {
@@ -1238,9 +1404,20 @@ void AccessibleWindow::rebuildLibraryPopup() {
 		addMenuCmd(popupLibrary, T(L"Register…", L"Registrati…"), []() {
 			system::openBrowser("https://vcvrack.com/login");
 		});
-		// Login needs email/password text fields, which a native menu can't host;
-		// use the main GUI's Library menu to sign in.
-		AppendMenuW(popupLibrary, MF_STRING | MF_GRAYED, 0, T(L"(sign in from the main window)", L"(accedi dalla finestra principale)"));
+		addMenuCmd(popupLibrary, T(L"Sign in…", L"Accedi…"), [this]() {
+			LoginDlgData d = showLoginDialog(hwnd);
+			if (!d.ok)
+				return;
+			std::string email    = toUtf8(d.email);
+			std::string password = toUtf8(d.password);
+			setStatus(Ts("Signing in…", "Accesso in corso…"));
+			HWND h = hwnd;
+			std::thread([email, password, h]() {
+				library::logIn(email, password);
+				library::checkUpdates();
+				PostMessageW(h, WM_LOGIN_DONE, 0, 0);
+			}).detach();
+		});
 		return;
 	}
 	addMenuCmd(popupLibrary, T(L"Sign out", L"Esci"), []() {
