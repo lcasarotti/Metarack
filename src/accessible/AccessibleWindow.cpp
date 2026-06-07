@@ -14,6 +14,8 @@
 #include <app/ModuleWidget.hpp>
 #include <app/CableWidget.hpp>
 #include <app/PortWidget.hpp>
+#include <app/ParamWidget.hpp>
+#include <app/Switch.hpp>
 #include <app/common.hpp>
 #include <plugin.hpp>
 #include <plugin/Plugin.hpp>
@@ -95,6 +97,11 @@ namespace accessible {
 
 static const UINT_PTR TIMER_ID = 1;
 static const UINT     TIMER_MS = 200;
+// One-shot timer that releases a momentary button after a single Space press.
+// The high window must outlast a few audio blocks so the module's edge detector
+// reliably samples the pulse before it drops back to rest.
+static const UINT_PTR TIMER_MOMENTARY = 2;
+static const UINT     MOMENTARY_MS    = 80;
 static const wchar_t* WND_CLASS = L"RackAccessibleWnd";
 
 static const int ID_RACK         = 101;
@@ -333,6 +340,8 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 		case WM_TIMER:
 			if (self && wp == TIMER_ID)
 				self->onTimer();
+			else if (self && wp == TIMER_MOMENTARY)
+				self->onMomentaryRelease();
 			return 0;
 		case WM_HOTKEY:
 			// Ctrl+Shift+A: bring accessibility window to front from any context
@@ -2427,6 +2436,26 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 
 		float next = cur;
 		if (vk == VK_SPACE && pq->snapEnabled) {
+			// A momentary button (e.g. a sequencer's Run) is driven by the module's
+			// edge detector: the on-screen widget sets the param high on press and
+			// low on release, and the module flips its internal state on the rising
+			// edge. Emulating that needs a full press-and-release, so a single Space
+			// pulses the param high now and a one-shot timer drops it back to rest a
+			// moment later — long enough for the audio thread to sample the pulse.
+			// Without the delayed release the param would latch high, and it would
+			// take a second Space just to release it before a third could toggle
+			// again: exactly the two-press divergence we are fixing here. Latching
+			// switches (configSwitch) fall through to the increment-and-wrap below,
+			// which already changes state in a single press.
+			if (isMomentaryParam(paramId)) {
+				pq->setValue(pq->maxValue);
+				momentaryModule  = currentModule;
+				momentaryParamId = paramId;
+				SetTimer(hwnd, TIMER_MOMENTARY, MOMENTARY_MS, nullptr);
+				std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
+				lvSetSubtext(listParam, row, 1, valW);
+				return;
+			}
 			next = std::round(cur) + 1.f;
 			if (next > pq->maxValue)
 				next = pq->minValue;
@@ -2451,6 +2480,31 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 	// as continuous NVDA announcements would drown out the synthesizer audio.
 	std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
 	lvSetSubtext(listParam, row, 1, valW);
+}
+
+bool AccessibleWindow::isMomentaryParam(int paramId) {
+	if (!currentModule || !APP || !APP->scene || !APP->scene->rack)
+		return false;
+	app::ModuleWidget* mw = APP->scene->rack->getModule(currentModule->id);
+	if (!mw)
+		return false;
+	// momentary lives on the app::Switch widget, not on the ParamQuantity, so we
+	// have to reach the on-screen widget to learn the button's behaviour.
+	auto* sw = dynamic_cast<app::Switch*>(mw->getParam(paramId));
+	return sw && sw->momentary;
+}
+
+void AccessibleWindow::onMomentaryRelease() {
+	KillTimer(hwnd, TIMER_MOMENTARY);
+	// Re-validate against the engine: the module could have been removed during
+	// the brief high window, leaving momentaryModule dangling.
+	if (momentaryModule && APP && APP->engine &&
+	    APP->engine->getModule(momentaryModule->id) == momentaryModule) {
+		if (engine::ParamQuantity* pq = momentaryModule->getParamQuantity(momentaryParamId))
+			pq->setValue(pq->minValue);
+	}
+	momentaryModule  = nullptr;
+	momentaryParamId = -1;
 }
 
 // ── Actions: ports / cables ──────────────────────────────────────────────────

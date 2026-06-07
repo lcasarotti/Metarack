@@ -82,6 +82,12 @@ struct AccessibleWindow {
 	View                  previousView     = RACK;
 	rack::engine::Module* currentModule    = nullptr;
 	rack::engine::Module* lastParamModule  = nullptr;
+
+	// Momentary-button release: a Space press on a momentary button (e.g. a
+	// sequencer's Run) pulses the param high; this records which param so a
+	// one-shot timer can drop it back to rest a moment later. -1 = none pending.
+	rack::engine::Module* momentaryModule  = nullptr;
+	int                   momentaryParamId = -1;
 	rack::plugin::Model*  selectedModel    = nullptr;
 	PendingCable          pendingCable;
 	bool                  libraryLoaded    = false;
@@ -156,6 +162,11 @@ private:
 	// shift selects the "with cables" variant of duplicate.
 	void handleRackCtrlKey(WPARAM vk, bool shift);
 	void handleParamKey(WPARAM vk);
+	// True if the param's on-screen widget is a momentary app::Switch (sets max on
+	// press, min on release) rather than a latching multi-value switch.
+	bool isMomentaryParam(int paramId);
+	// Fired by the one-shot momentary timer: drops the pulsed param back to rest.
+	void onMomentaryRelease();
 	void handlePortEnter(bool isOutput);
 	void handlePortDelete(bool isOutput);
 	void focusPortRow(bool isOutput, int portId);
