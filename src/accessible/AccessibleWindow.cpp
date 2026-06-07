@@ -731,7 +731,10 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 		if (MessageBoxW(hwnd,
 		                (T(L"Remove \"", L"Rimuovere \"") + name + L"\"?").c_str(),
 		                T(L"Confirm", L"Conferma"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
-			pushCommand([this, mw, sname]() {
+			// Remember the deleted module's row so focus lands on the previous
+			// module (row - 1), not row 0.
+			int row = lvFocused(listRack);
+			pushCommand([this, mw, sname, row]() {
 				cleanupCapturedMenu();
 				engine::Module* mod = mw->module;
 				mw->removeAction();
@@ -739,7 +742,7 @@ void AccessibleWindow::buildModuleContextMenu(app::ModuleWidget* mw) {
 					currentModule   = nullptr;
 					lastParamModule = nullptr;
 				}
-				refreshRackView();
+				refreshRackView(nullptr, row - 1);
 				rackDirty = false;
 				setStatus(Ts("Module \"", "Modulo \"") + sname + Ts("\" removed.", "\" rimosso."));
 			});
@@ -1837,7 +1840,7 @@ void AccessibleWindow::buildMenuBar() {
 
 // ── Rack view ────────────────────────────────────────────────────────────────
 
-void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule) {
+void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule, int focusRowFallback) {
 	if (!APP || !APP->scene || !APP->scene->rack)
 		return;
 	HWND lv = listRack;
@@ -1936,14 +1939,20 @@ void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule) {
 	// Restore focus: find the item with the same lParam, or default to row 0
 	int count = ListView_GetItemCount(lv);
 	int restoreTo = 0;
+	bool found = false;
 	if (prevFocusedLp != -1) {
 		for (int i = 0; i < count; i++) {
 			if (lvGetParam(lv, i) == prevFocusedLp) {
 				restoreTo = i;
+				found = true;
 				break;
 			}
 		}
 	}
+	// Previously-focused item is gone (e.g. just deleted): land on the neighbouring
+	// slot at the same index rather than snapping back to the first module.
+	if (!found && focusRowFallback >= 0 && count > 0)
+		restoreTo = std::min(focusRowFallback, count - 1);
 	if (count > 0) {
 		ListView_SetItemState(lv, restoreTo, LVIS_FOCUSED | LVIS_SELECTED, LVIS_FOCUSED | LVIS_SELECTED);
 		ListView_EnsureVisible(lv, restoreTo, FALSE);
@@ -2342,7 +2351,7 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 			// OpenGL framebuffer, which is unsafe from the message-pump
 			// reentrancy point this handler can run in. drainCommands() runs it
 			// from the main loop right after glfwPollEvents() instead.
-			pushCommand([this, mw, sname]() {
+			pushCommand([this, mw, sname, row]() {
 				cleanupCapturedMenu();
 				engine::Module* mod = mw->module;
 				mw->removeAction();
@@ -2350,7 +2359,9 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 					currentModule   = nullptr;
 					lastParamModule = nullptr;
 				}
-				refreshRackView();
+				// Focus the module before the deleted one (row - 1) instead of
+				// snapping back to the first module.
+				refreshRackView(nullptr, row - 1);
 				rackDirty = false;
 				setStatus(Ts("Module \"", "Modulo \"") + sname + Ts("\" removed.", "\" rimosso."));
 			});

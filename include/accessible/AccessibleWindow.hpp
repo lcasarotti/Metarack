@@ -151,7 +151,10 @@ private:
 	void refreshCurrentView();
 	// focusModule: after rebuilding, put focus on that module's row instead of
 	// restoring the previously-focused row (used right after inserting a module).
-	void refreshRackView(rack::app::ModuleWidget* focusModule = nullptr);
+	// focusRowFallback: if the previously-focused item is gone (e.g. just deleted),
+	// focus this row index (clamped) so focus lands on the neighbouring slot rather
+	// than jumping back to the first module.
+	void refreshRackView(rack::app::ModuleWidget* focusModule = nullptr, int focusRowFallback = -1);
 	void refreshLibraryView();
 	void repopulateParamView();   // full rebuild (on module switch)
 	void refreshParamValues();    // update value column only (on timer)
