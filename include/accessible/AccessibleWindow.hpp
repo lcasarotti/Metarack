@@ -67,6 +67,7 @@ struct AccessibleWindow {
 	std::vector<FreeSlotTarget> freeSlotTargets;
 
 	HWND hwnd            = nullptr;
+	HWND rackHwnd        = nullptr;  // main Rack window; owns this layer, regains focus when toggled off
 	HWND listRack        = nullptr;
 	HWND treeLibrary     = nullptr;
 	HWND listParam       = nullptr;
@@ -102,6 +103,7 @@ struct AccessibleWindow {
 	std::vector<rack::ui::Menu*>              ownedSubmenus;   // submenus we created; deleted on pop/cleanup
 	rack::app::LedDisplayChoice*              learningCell    = nullptr;  // active Tier B learn target
 	std::wstring                              learningLastText;
+	int                                       lastDisplayCellRow = 0;    // row that opened the current Tier-A submenu
 
 	// ── Native Win32 menu bar ──────────────────────────────────────────────────
 	// A real HMENU attached with SetMenu(). Windows handles Alt to enter the bar,
@@ -122,7 +124,10 @@ struct AccessibleWindow {
 	// safe point. There is only ever one accessible window.
 	static AccessibleWindow* instance;
 
-	static AccessibleWindow* create();
+	// owner: the main Rack window's HWND. The accessible interface becomes an
+	// owned tool window (no Alt+Tab / taskbar entry) shown as a toggleable layer
+	// over Rack, rather than a standalone window.
+	static AccessibleWindow* create(HWND owner);
 	~AccessibleWindow();
 
 	void switchView(View v);
@@ -143,6 +148,13 @@ private:
 	void onCreate();
 	void onSize();
 	void onTimer();
+
+	// Show/hide the accessible layer over the Rack window. Toggled by Ctrl+Shift+A.
+	// show=true sizes the layer over Rack, brings it to front and focuses the active
+	// control; show=false hides it and returns keyboard focus to the Rack window.
+	void setLayerVisible(bool show);
+	// HWND of the control backing the currently active View (the one to focus).
+	HWND activeControl();
 
 	// Queue a command to run from the main loop (see drainCommands()).
 	void pushCommand(std::function<void()> fn);

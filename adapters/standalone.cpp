@@ -38,6 +38,11 @@
 	#include <GLFW/glfw3native.h> // for glfwGetOpenedFilenames()
 #endif
 
+#if defined ARCH_WIN
+	#define GLFW_EXPOSE_NATIVE_WIN32
+	#include <GLFW/glfw3native.h> // for glfwGetWin32Window() — owner HWND for the accessible layer
+#endif
+
 
 using namespace rack;
 
@@ -269,7 +274,10 @@ int main(int argc, char* argv[]) {
 	rack::accessible::AccessibleWindow* accessibleWindow = nullptr;
 	if (!settings::headless) {
 		INFO("Creating accessible window");
-		accessibleWindow = rack::accessible::AccessibleWindow::create();
+		// Own the layer with the Rack window so it has no separate Alt+Tab/taskbar
+		// entry and hands focus back to Rack when toggled off.
+		HWND rackHwnd = glfwGetWin32Window(APP->window->win);
+		accessibleWindow = rack::accessible::AccessibleWindow::create(rackHwnd);
 	}
 #endif
 

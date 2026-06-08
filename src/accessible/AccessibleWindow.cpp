@@ -242,7 +242,7 @@ static std::string getClipboardTextUtf8() {
 
 AccessibleWindow* AccessibleWindow::instance = nullptr;
 
-AccessibleWindow* AccessibleWindow::create() {
+AccessibleWindow* AccessibleWindow::create(HWND owner) {
 	HINSTANCE hInst = GetModuleHandleW(nullptr);
 
 	INITCOMMONCONTROLSEX icc = {};
@@ -261,15 +261,19 @@ AccessibleWindow* AccessibleWindow::create() {
 	RegisterClassExW(&wc);
 
 	AccessibleWindow* self = new AccessibleWindow;
+	self->rackHwnd = owner;
 	instance = self;
 
+	// Created hidden and as a tool window owned by the Rack window: it never gets
+	// its own Alt+Tab / taskbar entry and is shown as a layer over Rack on demand
+	// (Ctrl+Shift+A). onCreate() shows it initially via setLayerVisible(true).
 	HWND hwnd = CreateWindowExW(
-	              0,
+	              WS_EX_TOOLWINDOW,
 	              WND_CLASS,
 	              T(L"VCV Rack — Accessible Interface", L"VCV Rack — Interfaccia accessibile"),
-	              WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+	              WS_OVERLAPPEDWINDOW,
 	              CW_USEDEFAULT, CW_USEDEFAULT, 580, 720,
-	              nullptr, nullptr, hInst, self);
+	              owner, nullptr, hInst, self);
 
 	if (!hwnd) {
 		instance = nullptr;
@@ -326,12 +330,8 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 			// is brought to front (e.g. via Alt+Tab). Without this, the window
 			// frame becomes active but no child control has focus, so NVDA and
 			// keyboard input both fail.
-			if (self && LOWORD(wp) != WA_INACTIVE) {
-				HWND views[] = { self->listRack, self->treeLibrary, self->listParam,
-				                 self->listOutput, self->listInput, self->listContextMenu
-				               };
-				SetFocus(views[(int)self->currentView]);
-			}
+			if (self && LOWORD(wp) != WA_INACTIVE)
+				SetFocus(self->activeControl());
 			return 0;
 		case WM_SIZE:
 			if (self)
@@ -344,15 +344,11 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 				self->onMomentaryRelease();
 			return 0;
 		case WM_HOTKEY:
-			// Ctrl+Shift+A: bring accessibility window to front from any context
-			if (self && wp == 1) {
-				ShowWindow(hwnd, SW_RESTORE);
-				SetForegroundWindow(hwnd);
-				HWND views[] = { self->listRack, self->treeLibrary, self->listParam,
-				                 self->listOutput, self->listInput, self->listContextMenu
-				               };
-				SetFocus(views[(int)self->currentView]);
-			}
+			// Ctrl+Shift+A: toggle the accessible layer on/off from any context.
+			// The hotkey is global (RegisterHotKey), so it fires whether the layer
+			// is hidden (Rack focused) or shown.
+			if (self && wp == 1)
+				self->setLayerVisible(!IsWindowVisible(hwnd));
 			return 0;
 		case WM_COMMAND:
 			// Menu-bar selection. The lambda decides whether to run inline or defer
@@ -391,7 +387,10 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 			}
 			return 0;
 		case WM_CLOSE:
-			ShowWindow(hwnd, SW_MINIMIZE);
+			// Closing the layer (X / Alt+F4) just turns it off, handing focus back
+			// to Rack — it never tears down the window during the session.
+			if (self)
+				self->setLayerVisible(false);
 			return 0;
 		case WM_DESTROY:
 			UnregisterHotKey(hwnd, 1);
@@ -504,11 +503,42 @@ void AccessibleWindow::onCreate() {
 	// Ctrl+Shift+A: global hotkey to bring this window to front from anywhere
 	RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_SHIFT, 'A');
 
-	// Initial population and focus
+	// Pre-populate the rack list so the layer is ready the first time it's shown,
+	// but stay hidden: accessibility defaults to OFF at startup and the user turns
+	// it on at will with Ctrl+Shift+A. The window was created without WS_VISIBLE.
 	refreshRackView();
 	rackDirty = false;
-	SetForegroundWindow(hwnd);
-	SetFocus(listRack);
+}
+
+// HWND of the control backing the active View — the one that should take focus.
+HWND AccessibleWindow::activeControl() {
+	HWND views[] = { listRack, treeLibrary, listParam,
+	                 listOutput, listInput, listContextMenu
+	               };
+	return views[(int)currentView];
+}
+
+// ── Layer show/hide ──────────────────────────────────────────────────────────
+
+void AccessibleWindow::setLayerVisible(bool show) {
+	if (show) {
+		// Size the layer over the Rack window so it reads as a full-window overlay.
+		if (rackHwnd) {
+			RECT rc;
+			GetWindowRect(rackHwnd, &rc);
+			SetWindowPos(hwnd, HWND_TOP, rc.left, rc.top,
+			             rc.right - rc.left, rc.bottom - rc.top, SWP_NOACTIVATE);
+		}
+		ShowWindow(hwnd, SW_SHOW);
+		SetForegroundWindow(hwnd);
+		SetFocus(activeControl());
+	}
+	else {
+		ShowWindow(hwnd, SW_HIDE);
+		// Hand keyboard focus back to Rack's GUI window.
+		if (rackHwnd)
+			SetForegroundWindow(rackHwnd);
+	}
 }
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -1302,6 +1332,7 @@ void AccessibleWindow::cleanupCapturedMenu() {
 	displayCells.clear();
 	learningCell = nullptr;
 	learningLastText.clear();
+	lastDisplayCellRow = 0;
 }
 
 // Open the display-cell list for the current module (D key from RACK or PARAM).
@@ -2930,9 +2961,51 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 							}
 							else {
 								auto action = item.action;
-								self->switchView(self->previousView);
-								if (action)
-									action();
+								// If we are inside the Tier-A options for a display cell
+								// (menuStack level ≥1 and displayCells populated), re-open
+								// the display list after the action so the user can change
+								// other settings without pressing D again.
+								bool inDisplayOptions = !self->displayCells.empty() && self->menuStack.size() >= 2;
+								if (inDisplayOptions) {
+									int returnRow = self->lastDisplayCellRow;
+									if (action)
+										action();  // doAction + cleanupCapturedMenu
+									// currentModule and previousView are not cleared by cleanup.
+									if (APP && APP->scene && APP->scene->rack && self->currentModule) {
+										app::ModuleWidget* mw2 = APP->scene->rack->getModule(self->currentModule->id);
+										if (mw2) {
+											self->collectDisplayCells(mw2);
+											if (!self->displayCells.empty()) {
+												std::vector<ContextMenuItem> cells;
+												for (auto& dc : self->displayCells) {
+													app::LedDisplayChoice* ch = dc.choice;
+													std::wstring lbl = dc.label;
+													cells.push_back({lbl, [self, ch, lbl]() {
+														self->openDisplayCell({ch, lbl});
+													}, false});
+												}
+												self->menuStack.push_back(cells);
+												self->contextItems = cells;
+												ListView_DeleteAllItems(self->listContextMenu);
+												for (int i = 0; i < (int)self->contextItems.size(); i++)
+													lvAppendRow(self->listContextMenu, self->contextItems[i].label, (LPARAM)i);
+												self->switchView(CONTEXT_MENU);
+												// Restore focus to the cell that opened this submenu.
+												int clamp = (int)self->contextItems.size() - 1;
+												lvFocusRow(self->listContextMenu, returnRow > clamp ? clamp : returnRow, true);
+											}
+										}
+									}
+								}
+								else {
+									// Opening a display cell (level 0→1): save row so we can
+									// restore focus when returning from the submenu.
+									if (!self->displayCells.empty() && self->menuStack.size() == 1)
+										self->lastDisplayCellRow = row;
+									self->switchView(self->previousView);
+									if (action)
+										action();
+								}
 							}
 						}
 						return 0;
