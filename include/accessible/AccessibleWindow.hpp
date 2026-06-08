@@ -164,6 +164,9 @@ private:
 	// Clipboard / duplicate shortcuts in the RACK list (Ctrl+C/V/D, Ctrl+Shift+D).
 	// shift selects the "with cables" variant of duplicate.
 	void handleRackCtrlKey(WPARAM vk, bool shift);
+	// Toggle the focused module in/out of the rack's multi-selection (Space in RACK).
+	// Selection lives in RackWidget::selectedModules and is shown as a label marker.
+	void toggleRackSelection();
 	void handleParamKey(WPARAM vk);
 	// True if the param's on-screen widget is a momentary app::Switch (sets max on
 	// press, min on release) rather than a latching multi-value switch.

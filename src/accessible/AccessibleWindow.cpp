@@ -1546,13 +1546,32 @@ void AccessibleWindow::buildMenuBar() {
 	});
 	sep(edit);
 	addMenuCmd(edit, T(L"Select all", L"Seleziona tutto"), [this]() {
-		pushCommand([]() {
+		pushCommand([this]() {
 			APP->scene->rack->selectAll();
+			int n = (int)APP->scene->rack->getSelected().size();
+			// Re-render so every module shows the selection marker. If not currently in
+			// RACK, mark dirty so the markers are built when the user switches back.
+			if (currentView == RACK) {
+				refreshRackView();
+				rackDirty = false;
+			}
+			else {
+				rackDirty = true;
+			}
+			setStatus(std::to_string(n) + Ts(" modules selected.", " moduli selezionati."));
 		});
 	});
 	addMenuCmd(edit, T(L"Deselect", L"Deseleziona"), [this]() {
-		pushCommand([]() {
+		pushCommand([this]() {
 			APP->scene->rack->deselectAll();
+			if (currentView == RACK) {
+				refreshRackView();
+				rackDirty = false;
+			}
+			else {
+				rackDirty = true;
+			}
+			setStatus(Ts("Selection cleared.", "Selezione azzerata."));
 		});
 	});
 	addMenuCmd(edit, T(L"Copy selection", L"Copia selezione"), [this]() {
@@ -1918,6 +1937,10 @@ void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule, int focus
 		}
 
 		std::wstring label = toWide(mw->model->name) + coordSuffix(visRow + 1, col + 1);
+		// Multi-selection marker: appended (not prefixed) so NVDA reads it while
+		// arrowing and so the module name stays first for type-ahead search.
+		if (APP->scene->rack->isSelected(mw))
+			label += T(L" — selected", L" — selezionato");
 		int item = lvAppendRow(lv, label, (LPARAM)mw);
 		ListView_SetItemPosition(lv, item, col * stepX, visRow * stepY);
 		col++;
@@ -2300,6 +2323,47 @@ void AccessibleWindow::handleRackCtrlKey(WPARAM vk, bool shift) {
 	}
 }
 
+void AccessibleWindow::toggleRackSelection() {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+	int row = lvFocused(listRack);
+	if (row < 0)
+		return;
+	LPARAM lp = lvGetParam(listRack, row);
+	if (lp == 0) {
+		// A free slot holds no module; nothing to add to the selection.
+		setStatus(Ts("Free slot: nothing to select.", "Slot libero: niente da selezionare."));
+		return;
+	}
+
+	auto* mw   = reinterpret_cast<app::ModuleWidget*>(lp);
+	auto* rack = APP->scene->rack;
+	bool  nowSel = !rack->isSelected(mw);
+	rack->select(mw, nowSel);
+
+	// Update just this one row's label in place (add or strip the marker), rather
+	// than rebuilding the whole list, then re-fire the focus event so NVDA reads the
+	// updated label. This is the reliable feedback channel — status messages can be
+	// dropped while NVDA is mid-speech.
+	const std::wstring marker = T(L" — selected", L" — selezionato");
+	wchar_t buf[512] = {};
+	ListView_GetItemText(listRack, row, 0, buf, 512);
+	std::wstring label = buf;
+	if (label.size() >= marker.size()
+	    && label.compare(label.size() - marker.size(), marker.size(), marker) == 0)
+		label.erase(label.size() - marker.size());
+	if (nowSel)
+		label += marker;
+	lvSetSubtext(listRack, row, 0, label);
+	NotifyWinEvent(EVENT_OBJECT_FOCUS, listRack, OBJID_CLIENT, row + 1);
+
+	int n = (int)rack->getSelected().size();
+	std::string sname = mw->model ? mw->model->name : "?";
+	setStatus("\"" + sname + "\""
+	          + (nowSel ? Ts(" selected. ", " selezionato. ") : Ts(" deselected. ", " deselezionato. "))
+	          + std::to_string(n) + Ts(" modules in selection.", " moduli selezionati."));
+}
+
 void AccessibleWindow::handleRackKey(WPARAM vk) {
 	if (!APP || !APP->scene || !APP->scene->rack)
 		return;
@@ -2338,6 +2402,33 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 		if (row < 0)
 			return;
 		LPARAM lp = lvGetParam(listRack, row);
+
+		// If a multi-selection is active, delete the whole selection in one undoable
+		// action (mirrors deleting a marquee selection in the standard GUI). This
+		// takes priority even when the focused row is a free slot.
+		if (APP->scene->rack->hasSelection()) {
+			int n = (int)APP->scene->rack->getSelected().size();
+			if (MessageBoxW(hwnd,
+			                (T(L"Delete ", L"Eliminare ") + std::to_wstring(n)
+			                 + T(L" modules?", L" moduli?")).c_str(),
+			                T(L"Confirm", L"Conferma"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
+				pushCommand([this, n]() {
+					cleanupCapturedMenu();
+					// currentModule may be among the deleted set; clear it to avoid a
+					// dangling pointer in the PARAM view.
+					currentModule   = nullptr;
+					lastParamModule = nullptr;
+					APP->scene->rack->deleteSelectionAction();
+					// The deleted modules may span several rows; land focus on the
+					// first remaining module rather than guessing a neighbour.
+					refreshRackView(nullptr, 0);
+					rackDirty = false;
+					setStatus(std::to_string(n) + Ts(" modules removed.", " moduli rimossi."));
+				});
+			}
+			return;
+		}
+
 		if (lp == 0)
 			return;
 
@@ -2716,9 +2807,16 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				return 0;
 			}
 			if (wp == 'R') {
-				self->pushCommand([]() {
-					if (APP->scene->rack->hasSelection())
-						APP->scene->rack->randomizeSelectionAction();
+				self->pushCommand([self]() {
+					auto* rack = APP->scene->rack;
+					if (rack->hasSelection()) {
+						int n = (int)rack->getSelected().size();
+						rack->randomizeSelectionAction();
+						self->setStatus(std::to_string(n) + Ts(" modules randomized.", " moduli randomizzati."));
+					}
+					else {
+						self->setStatus(Ts("No selection to randomize.", "Nessuna selezione da randomizzare."));
+					}
 				});
 				return 0;
 			}
@@ -2862,6 +2960,20 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				// Backspace: remove module in RACK, reset param to default in
 				// PARAM, disconnect cable in OUTPUT/INPUT (mirrors Del / the GUI).
 				if (self->currentView == RACK) {
+					// Shift+Backspace: clear the multi-selection quickly (no deletion).
+					if (shift) {
+						auto* rack = APP->scene->rack;
+						if (rack->hasSelection()) {
+							rack->deselectAll();
+							self->refreshRackView();
+							self->rackDirty = false;
+							self->setStatus(Ts("Selection cleared.", "Selezione azzerata."));
+						}
+						else {
+							self->setStatus(Ts("No selection.", "Nessuna selezione."));
+						}
+						return 0;
+					}
 					self->handleRackKey(VK_BACK);
 					return 0;
 				}
@@ -2939,6 +3051,11 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				}
 				if (self->currentView == PARAM) {
 					self->handleParamKey(VK_SPACE);
+					return 0;
+				}
+				// In RACK, Space toggles the focused module in/out of the selection.
+				if (self->currentView == RACK) {
+					self->toggleRackSelection();
 					return 0;
 				}
 				break;
