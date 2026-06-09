@@ -1,0 +1,18 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  -clang-analyzer-osx.*,
+  objc-*,
+  misc-redundant-expression,
+  misc-unused-parameters,
+  readability-suspicious-call-argument
+
+HeaderFilterRegex: 'src/accessible/.*'
+
+WarningsAsErrors: ''
+
+CheckOptions:
+  - key: bugprone-argument-comment.StrictMode
+    value: '0'

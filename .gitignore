@@ -2,6 +2,11 @@
 .*
 !.git*
 !.claude
+!.clang-tidy
+!.astylerc
+
+# Generated build artifacts
+compile_commands.json
 
 # Binaries and build targets
 *.a
