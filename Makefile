@@ -114,15 +114,22 @@ dep:
 cleandep:
 	$(MAKE) -C dep clean
 
+# On macOS the executable records libRack.dylib with a bare relative install name,
+# which dyld does not resolve against the current directory. Point dyld at the repo
+# root so the dev build runs without bundling (make dist). No-op on Linux/Windows.
+ifdef ARCH_MAC
+	RUN_ENV := DYLD_LIBRARY_PATH="$(CURDIR)"
+endif
+
 run: $(STANDALONE_TARGET)
-	./$< -d
+	$(RUN_ENV) ./$< -d
 
 runr: $(STANDALONE_TARGET)
-	./$<
+	$(RUN_ENV) ./$<
 
 debug: $(STANDALONE_TARGET)
 ifdef ARCH_MAC
-	lldb -- ./$< -d
+	$(RUN_ENV) lldb -- ./$< -d
 endif
 ifdef ARCH_WIN
 	gdb --args ./$< -d
