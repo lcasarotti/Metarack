@@ -36,6 +36,7 @@
 #if defined ARCH_MAC
 	#define GLFW_EXPOSE_NATIVE_COCOA
 	#include <GLFW/glfw3native.h> // for glfwGetOpenedFilenames()
+	#include <accessible/AccessibleWindowMac.hpp>
 #endif
 
 #if defined ARCH_WIN
@@ -281,6 +282,14 @@ int main(int argc, char* argv[]) {
 	}
 #endif
 
+#if defined ARCH_MAC
+	rack::accessible::AccessibleWindow* accessibleWindow = nullptr;
+	if (!settings::headless) {
+		INFO("Creating accessible window");
+		accessibleWindow = rack::accessible::AccessibleWindow::create(APP->window->win);
+	}
+#endif
+
 	// Run context
 	if (settings::headless) {
 		printf("Press enter to exit.\n");
@@ -296,6 +305,11 @@ int main(int argc, char* argv[]) {
 		INFO("Stopped window");
 
 #if defined ARCH_WIN
+		delete accessibleWindow;
+		accessibleWindow = nullptr;
+#endif
+
+#if defined ARCH_MAC
 		delete accessibleWindow;
 		accessibleWindow = nullptr;
 #endif
