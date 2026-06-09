@@ -21,7 +21,11 @@
 #include <app/ModuleWidget.hpp>
 #include <app/TipWindow.hpp>
 #include <plugin/Model.hpp>
+#include <plugin/Plugin.hpp>
+#include <plugin.hpp>
 #include <engine/Module.hpp>
+#include <engine/Engine.hpp>
+#include <app/common.hpp>
 #include <ui/common.hpp>
 #include <math.hpp>
 #include <settings.hpp>
@@ -40,6 +44,27 @@
 #include <thread>
 
 using namespace rack;
+
+// One node of the LIBRARY tree (NSOutlineView). A brand node has model == nullptr and
+// a children array of model nodes; a model node carries its plugin::Model* and no
+// children. Declared up here (interface + implementation) so the C++ key handlers in
+// the first namespace block can read its @public ivars by pointer. The node owns its
+// label and children and releases them in dealloc (the project is non-ARC).
+@interface AXLibNode : NSObject {
+@public
+	NSString*           label;
+	rack::plugin::Model* model;     // nil for brand nodes
+	NSMutableArray*     children;   // AXLibNode* models; nil for model nodes
+}
+@end
+
+@implementation AXLibNode
+- (void)dealloc {
+	[label release];
+	[children release];
+	[super dealloc];
+}
+@end
 
 // ─────────────────────────────────────────────────────────────────────────────
 // macOS / VoiceOver accessibility layer — Cocoa counterpart of the Win32 layer in
@@ -84,9 +109,10 @@ struct AccessibleWindow::Internal {
 	NSWindow*    rackWindow  = nil;   // main Rack window; regains key when toggled off
 	NSWindow*    panel       = nil;   // our accessible layer, a child window over Rack
 	id           controller  = nil;   // RackAXController* (datasource/delegate), retained
-	NSTableView* rackTable   = nil;   // RackAXTableView*, owned by the view hierarchy
-	NSTextField* statusLabel = nil;   // status line at the bottom of the panel
-	bool         visible     = false;
+	NSTableView*   rackTable     = nil; // RackAXTableView*, owned by the view hierarchy
+	NSOutlineView* libraryOutline = nil; // RackAXOutlineView*, owned by the view hierarchy
+	NSTextField*   statusLabel   = nil; // status line at the bottom of the panel
+	bool           visible       = false;
 
 	// Menu bar (NSApp.mainMenu). menuTarget is the shared action/validation/delegate
 	// object; recentMenu/libraryMenu are rebuilt on open via menuNeedsUpdate:.
@@ -101,6 +127,11 @@ struct AccessibleWindow::Internal {
 	bool            rackDirty     = true;      // rebuild the RACK list on next show
 
 	std::vector<AXRow> rackRows;
+
+	// LIBRARY tree (brand → models). Built lazily on first show, like the Win32
+	// libraryLoaded flag; libraryRoots is an NSArray of AXLibNode* brands, retained.
+	NSMutableArray* libraryRoots  = nil;
+	bool            libraryLoaded = false;
 
 	// Mutations queued from Cocoa event handlers, run from drainCommands().
 	std::vector<std::function<void()>> commandQueue;
@@ -331,6 +362,82 @@ static void refreshRackView(AccessibleWindow* self,
 	}
 }
 
+// ── Library view ─────────────────────────────────────────────────────────────
+// Build the LIBRARY tree from plugin::plugins: one brand node per plugin, one model
+// node per visible model. Mirrors the Win32 refreshLibraryView (TreeView). The result
+// (libraryRoots) is read back by the NSOutlineView datasource on the controller.
+static void refreshLibraryView(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+
+	NSMutableArray* roots = [[NSMutableArray alloc] init];
+	for (plugin::Plugin* plug : plugin::plugins) {
+		if (!plug)
+			continue;
+		AXLibNode* brand = [[AXLibNode alloc] init];
+		brand->label = [nsstr(plug->getBrand()) retain];
+		brand->model = nullptr;
+		brand->children = [[NSMutableArray alloc] init];
+		for (plugin::Model* model : plug->models) {
+			if (!model || model->hidden)
+				continue;
+			AXLibNode* node = [[AXLibNode alloc] init];
+			node->label = [nsstr(model->name) retain];
+			node->model = model;
+			node->children = nil;
+			[brand->children addObject:node];
+			[node release];
+		}
+		[roots addObject:brand];
+		[brand release];
+	}
+
+	if (in->libraryRoots)
+		[in->libraryRoots release];
+	in->libraryRoots = roots; // retained
+	[in->libraryOutline reloadData];
+}
+
+// Pixel top-left of a grid cell, mirroring ModuleWidget::setGridPosition() — the same
+// helper as the Win32 layer's gridToPixel. Lets a placed module land on whichever grid
+// cell the activated free slot carries.
+static math::Vec gridToPixel(int gridX, int gridY) {
+	return math::Vec(gridX, gridY) * app::RACK_GRID_SIZE + app::RACK_OFFSET;
+}
+
+// Create a module from a model and drop it at a grid cell. Mirrors the Win32 placeModule:
+// register with the engine BEFORE building the widget (the native browser's order — the
+// engine must own the module or ~ModuleWidget aborts), then widget + default preset +
+// an undoable ModuleAdd so Cmd+Z removes it.
+static void placeModule(AccessibleWindow* self, plugin::Model* model, int gridX, int gridY) {
+	if (!model || !APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	engine::Module* m = model->createModule();
+	if (!m)
+		return;
+	APP->engine->addModule(m);
+
+	app::ModuleWidget* mw = model->createModuleWidget(m);
+	if (!mw) {
+		APP->engine->removeModule(m);
+		delete m;
+		return;
+	}
+
+	APP->scene->rack->setModulePosNearest(mw, gridToPixel(gridX, gridY));
+	APP->scene->rack->addModule(mw);
+	mw->loadTemplate();
+
+	history::ModuleAdd* ha = new history::ModuleAdd;
+	ha->setModule(mw);
+	APP->history->push(ha);
+
+	// Keep focus on the inserted module's row (not the new free slot) for confirmation.
+	refreshRackView(self, mw);
+	self->internal->rackDirty = false;
+	setStatus(self, L("Module \"", "Modulo \"") + model->name + L("\" added.", "\" aggiunto."));
+}
+
 static const char* axViewName(AXView v) {
 	switch (v) {
 		case AX_LIBRARY: return "Library";
@@ -347,7 +454,8 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 	AccessibleWindow::Internal* in = self->internal;
 	if (v == AX_RACK) {
 		in->currentView = AX_RACK;
-		[in->rackTable setHidden:NO];
+		[[in->libraryOutline enclosingScrollView] setHidden:YES];
+		[[in->rackTable enclosingScrollView] setHidden:NO];
 		if (in->rackDirty) {
 			refreshRackView(self);
 			in->rackDirty = false;
@@ -357,6 +465,22 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 			[in->rackTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
 			           byExtendingSelection:NO];
 		NSAccessibilityPostNotification(in->rackTable,
+		    NSAccessibilitySelectedRowsChangedNotification);
+		return;
+	}
+	if (v == AX_LIBRARY) {
+		in->currentView = AX_LIBRARY;
+		[[in->rackTable enclosingScrollView] setHidden:YES];
+		[[in->libraryOutline enclosingScrollView] setHidden:NO];
+		if (!in->libraryLoaded) {
+			refreshLibraryView(self);
+			in->libraryLoaded = true;
+		}
+		[in->panel makeFirstResponder:in->libraryOutline];
+		if ([in->libraryOutline selectedRow] < 0 && [in->libraryOutline numberOfRows] > 0)
+			[in->libraryOutline selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
+			               byExtendingSelection:NO];
+		NSAccessibilityPostNotification(in->libraryOutline,
 		    NSAccessibilitySelectedRowsChangedNotification);
 		return;
 	}
@@ -388,11 +512,18 @@ static void onRackEnter(AccessibleWindow* self) {
 	if (!r)
 		return;
 	if (r->freeSlot) {
-		// Place a queued model (Phase 3) or open the library, mirroring the GUI's
-		// double-click-on-empty-slot behaviour.
+		// Place a queued model on this row's free slot, otherwise open the library —
+		// mirroring the GUI's double-click-on-empty-slot behaviour.
 		if (self->internal->selectedModel) {
-			// TODO Phase 3: placeModule(selectedModel, r->gridX, r->gridY).
-			switchTo(self, AX_LIBRARY);
+			plugin::Model* model = self->internal->selectedModel;
+			self->internal->selectedModel = nullptr;
+			// Capture the slot's grid cell by value so a later list rebuild can't move it.
+			int gx = r->gridX, gy = r->gridY;
+			// Defer: placeModule mutates the widget tree (unsafe from a Cocoa event
+			// handler); drainCommands() runs it from the main loop.
+			pushCommand(self, [self, model, gx, gy]() {
+				placeModule(self, model, gx, gy);
+			});
 		}
 		else {
 			switchTo(self, AX_LIBRARY);
@@ -402,6 +533,31 @@ static void onRackEnter(AccessibleWindow* self) {
 		self->internal->currentModule = r->mw->module;
 		switchTo(self, AX_PARAM);
 	}
+}
+
+// Library Enter: a brand node toggles expand/collapse; a model node is queued as the
+// pending selection and returns to RACK, where Enter on a free slot drops it. Mirrors
+// the Win32 handleLibraryEnter.
+static void onLibraryEnter(AccessibleWindow* self) {
+	NSOutlineView* ov = self->internal->libraryOutline;
+	NSInteger row = [ov selectedRow];
+	if (row < 0)
+		return;
+	AXLibNode* node = [ov itemAtRow:row];
+	if (!node)
+		return;
+	if (!node->model) {
+		if ([ov isItemExpanded:node])
+			[ov collapseItem:node];
+		else
+			[ov expandItem:node];
+		return;
+	}
+	self->internal->selectedModel = node->model;
+	switchTo(self, AX_RACK);
+	setStatus(self, "\"" + node->model->name + "\" "
+	          + L("selected — go to [ Free slot ] and press Enter.",
+	              "selezionato — vai su [ Slot libero ] e premi Invio."));
 }
 
 static void onRackToggleSelect(AccessibleWindow* self) {
@@ -520,8 +676,10 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 // AppKit glue
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Datasource/delegate for the list tables. Reads rows straight from the C++ state.
-@interface RackAXController : NSObject <NSTableViewDataSource, NSTableViewDelegate> {
+// Datasource/delegate for both the RACK table and the LIBRARY outline. Reads rows
+// straight from the C++ state (rackRows) and the AXLibNode tree (libraryRoots).
+@interface RackAXController : NSObject <NSTableViewDataSource, NSTableViewDelegate,
+                                        NSOutlineViewDataSource, NSOutlineViewDelegate> {
 @public
 	rack::accessible::AccessibleWindow* owner;
 }
@@ -540,6 +698,33 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	if (row < 0 || row >= (NSInteger) rows.size())
 		return @"";
 	return [NSString stringWithUTF8String:rows[row].label.c_str()];
+}
+
+// ── LIBRARY outline datasource ───────────────────────────────────────────────
+// Items are AXLibNode*: nil is the root, brand nodes have children, model nodes don't.
+- (NSInteger)outlineView:(NSOutlineView*)ov numberOfChildrenOfItem:(id)item {
+	if (!owner || !owner->internal)
+		return 0;
+	if (item == nil)
+		return (NSInteger) [owner->internal->libraryRoots count];
+	AXLibNode* n = (AXLibNode*) item;
+	return n->children ? (NSInteger) [n->children count] : 0;
+}
+- (id)outlineView:(NSOutlineView*)ov child:(NSInteger)index ofItem:(id)item {
+	if (!owner || !owner->internal)
+		return nil;
+	if (item == nil)
+		return [owner->internal->libraryRoots objectAtIndex:index];
+	AXLibNode* n = (AXLibNode*) item;
+	return [n->children objectAtIndex:index];
+}
+- (BOOL)outlineView:(NSOutlineView*)ov isItemExpandable:(id)item {
+	AXLibNode* n = (AXLibNode*) item;
+	return n && n->model == nullptr;
+}
+- (id)outlineView:(NSOutlineView*)ov objectValueForTableColumn:(NSTableColumn*)col byItem:(id)item {
+	AXLibNode* n = (AXLibNode*) item;
+	return n ? n->label : @"";
 }
 @end
 
@@ -567,7 +752,13 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	}
 	unsigned short kc = e.keyCode;
 	NSString* ch = [[e charactersIgnoringModifiers] lowercaseString];
+	bool shift = (m & NSEventModifierFlagShift) != 0;
 
+	// Shift+L jumps to the LIBRARY view (parity with the Win32 Shift+L shortcut).
+	if (shift && [ch isEqualToString:@"l"]) {
+		switchTo(owner, AX_LIBRARY);
+		return;
+	}
 	if (kc == 36 || kc == 76) {          // Return / keypad Enter
 		onRackEnter(owner);
 		return;
@@ -585,6 +776,47 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	if ([ch isEqualToString:@"i"]) { onRackPOI(owner, 'I'); return; }
 	if ([ch isEqualToString:@"d"]) {
 		announce(owner, L("Display cells: not yet implemented", "Celle display: non ancora implementato"));
+		return;
+	}
+	[super keyDown:e];
+}
+@end
+
+// NSOutlineView for the LIBRARY tree. Up/Down navigate and Left/Right collapse/expand
+// natively (VoiceOver reads each item); we only intercept Enter (select/toggle), Escape
+// and Shift+R (back to RACK). Mirrors the Win32 treeLibrary subclass.
+@interface RackAXOutlineView : NSOutlineView {
+@public
+	rack::accessible::AccessibleWindow* owner;
+}
+@end
+
+@implementation RackAXOutlineView
+- (void)keyDown:(NSEvent*)e {
+	using namespace rack::accessible;
+	if (!owner || !owner->internal) {
+		[super keyDown:e];
+		return;
+	}
+	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+	if (m & NSEventModifierFlagCommand) {   // Cmd-combos belong to the menu bar
+		[super keyDown:e];
+		return;
+	}
+	unsigned short kc = e.keyCode;
+	NSString* ch = [[e charactersIgnoringModifiers] lowercaseString];
+	bool shift = (m & NSEventModifierFlagShift) != 0;
+
+	if (kc == 36 || kc == 76) {             // Return / keypad Enter
+		onLibraryEnter(owner);
+		return;
+	}
+	if (kc == 53) {                         // Escape → back to RACK
+		switchTo(owner, AX_RACK);
+		return;
+	}
+	if (shift && [ch isEqualToString:@"r"]) { // Shift+R → back to RACK
+		switchTo(owner, AX_RACK);
 		return;
 	}
 	[super keyDown:e];
@@ -1070,6 +1302,32 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	[scroll release];
 	self->internal->rackTable = table;
 
+	// LIBRARY outline, same geometry as the RACK table but hidden until switched to.
+	NSScrollView* libScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	[libScroll setHasVerticalScroller:YES];
+	[libScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+	[libScroll setHidden:YES];
+
+	RackAXOutlineView* outline = [[RackAXOutlineView alloc]
+	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	outline->owner = self;
+	NSTableColumn* lcol = [[NSTableColumn alloc] initWithIdentifier:@"lib"];
+	[lcol setWidth:w > 80 ? w - 40 : 800];
+	[lcol setEditable:NO];
+	[outline addTableColumn:lcol];
+	[outline setOutlineTableColumn:lcol];
+	[lcol release];
+	[outline setHeaderView:nil];
+	[outline setAllowsMultipleSelection:NO];
+	[outline setAllowsEmptySelection:YES];
+	[outline setDataSource:controller];
+	[outline setDelegate:controller];
+	[libScroll setDocumentView:outline];
+	[outline release];
+	[content addSubview:libScroll];
+	[libScroll release];
+	self->internal->libraryOutline = outline;
+
 	instance = self;
 
 	// Native menu bar (App/File/Edit/View/Engine/Library/Help). Its key equivalents
@@ -1091,6 +1349,8 @@ AccessibleWindow::~AccessibleWindow() {
 			[internal->panel orderOut:nil];
 			[internal->panel release];
 		}
+		if (internal->libraryRoots)
+			[internal->libraryRoots release];
 		if (internal->controller)
 			[(id) internal->controller release];
 		if (internal->menuTarget)
