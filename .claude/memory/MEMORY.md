@@ -7,5 +7,6 @@
 - [Display Choice Mechanism](reference_display_choice_mechanism.md) — Come funzionano i display cliccabili dei moduli (Audio/MIDI/CC): due famiglie di LedDisplayChoice, menù vs learn
 - [Accessible Display Plan](project_accessible_display_plan.md) — Piano a fasi per il tasto D che espone i display cliccabili nella finestra accessibile
 - [Accessible Window — i18n](project_i18n_accessible.md) — Localizzazione IT/EN dell'AccessibleWindow: helper T()/Ts(), copertura completa, build OK 2026-06-05
-- [GitHub Repo](reference_github_repo.md) — Fork: github.com/lcasarotti/Metarack, branch Screen-Reader-Accessibility, remote locale: metarack
+- [GitHub Repo](reference_github_repo.md) — Fork: github.com/lcasarotti/Metarack, branch v2, push diretto
+- [macOS Accessibility — Piano](project_macos_accessibility.md) — Prossima fase: NSAccessibility/VoiceOver; ambiente dev configurato (hook, clang-tidy, skills)
 - [Installer Build](reference_installer.md) — Come produrre il .exe NSIS della versione accessibile: build WSL → dist assembly → makensis

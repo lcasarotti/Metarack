@@ -9,6 +9,6 @@ metadata:
 
 Il repo GitHub del progetto è **https://github.com/lcasarotti/Metarack**.
 
-Il branch principale per il lavoro di accessibilità è `Screen-Reader-Accessibility`.
+Il branch principale è `v2`. Push diretto su `v2`, nessun processo PR.
 
-Il remote locale è configurato come `metarack` (origin punta all'upstream VCVRack/Rack).
+Il remote si chiama `origin` e punta al fork personale.
