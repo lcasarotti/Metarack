@@ -1,10 +1,11 @@
 !include "MUI2.nsh"
 
-!define NAME_FULL "VCV Rack Free ${RACK_VERSION}"
-!define NAME "VCV Rack ${RACK_VERSION_MAJOR} Free"
-!define RACK_DIR "Rack${RACK_VERSION_MAJOR}Free"
-!define INSTALL_REG "Software\VCV\Rack${RACK_VERSION_MAJOR}Free"
-!define UNINSTALL_REG "Software\Microsoft\Windows\CurrentVersion\Uninstall\VCVRack${RACK_VERSION_MAJOR}Free"
+!define NAME_FULL "VCV Rack Free ${RACK_VERSION} Accessible"
+!define NAME "VCV Rack ${RACK_VERSION_MAJOR} Free Accessible"
+!define RACK_DIR "Rack${RACK_VERSION_MAJOR}Accessible"
+!define DIST_DIR "Rack${RACK_VERSION_MAJOR}Free"
+!define INSTALL_REG "Software\VCV\Rack${RACK_VERSION_MAJOR}Accessible"
+!define UNINSTALL_REG "Software\Microsoft\Windows\CurrentVersion\Uninstall\VCVRack${RACK_VERSION_MAJOR}Accessible"
 
 Name "${NAME_FULL}"
 Unicode True
@@ -86,7 +87,7 @@ Section "${NAME}" INSTALL_SECTION
 	DetailPrint "Uninstalling existing version"
 	ExecWait '"$INSTDIR\Uninstall.exe" /S _?=$INSTDIR'
 
-	File /r "dist\${RACK_DIR}\*"
+	File /r "dist\${DIST_DIR}\*"
 
 	; Store installation folder
 	WriteRegStr HKLM "${INSTALL_REG}" "" "$INSTDIR"
