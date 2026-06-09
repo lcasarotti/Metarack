@@ -121,13 +121,25 @@ ifdef ARCH_MAC
 	RUN_ENV := DYLD_LIBRARY_PATH="$(CURDIR)"
 endif
 
-run: $(STANDALONE_TARGET)
+# VCV-prebuilt plugins record their libRack.dylib dependency as the absolute path
+# /tmp/Rack2/libRack.dylib (the VCV build farm's build directory). DYLD_LIBRARY_PATH
+# overrides this in a plain shell, but not through make's SIP-protected shell, so under
+# `make run` the plugins fail to load (Library not loaded: /tmp/Rack2/libRack.dylib) and
+# the module browser comes up empty. Point that absolute path at our local libRack.dylib.
+# /tmp is volatile, so recreate the link on every run. No-op off macOS.
+mac-librack-link:
+ifdef ARCH_MAC
+	@mkdir -p /tmp/Rack2
+	@ln -sf "$(CURDIR)/libRack.dylib" /tmp/Rack2/libRack.dylib
+endif
+
+run: $(STANDALONE_TARGET) mac-librack-link
 	$(RUN_ENV) ./$< -d
 
-runr: $(STANDALONE_TARGET)
+runr: $(STANDALONE_TARGET) mac-librack-link
 	$(RUN_ENV) ./$<
 
-debug: $(STANDALONE_TARGET)
+debug: $(STANDALONE_TARGET) mac-librack-link
 ifdef ARCH_MAC
 	$(RUN_ENV) lldb -- ./$< -d
 endif
@@ -327,4 +339,4 @@ cleandist:
 
 
 .DEFAULT_GOAL := all
-.PHONY: all dep run debug clean plugins dist sdk package lipo notarize
+.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link
