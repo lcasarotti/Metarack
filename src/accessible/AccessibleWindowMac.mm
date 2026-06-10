@@ -2611,6 +2611,26 @@ AccessibleWindow::~AccessibleWindow() {
 	if (internal) {
 		[NSApp setMainMenu:nil];
 		cleanupContextMenu(this);   // free any detached appendContextMenu() menus
+
+		// Detach the datasource/delegate from every view before releasing the controller.
+		// AppKit holds these as *unretained* refs, and the panel (with its tables) can
+		// outlive this destructor — at app termination the window sits in an autorelease
+		// pool and gets a final redraw after we return. That redraw would call back into
+		// the freed controller and read its dangling `owner`, crashing in
+		// tableView:objectValueForTableColumn:row:. Clearing the refs (and the owner)
+		// severs that path. Messaging nil is a no-op, so unset views are harmless.
+		NSTableView* dataViews[] = { internal->rackTable, internal->paramTable,
+		                             internal->outputTable, internal->inputTable,
+		                             internal->contextTable };
+		for (NSTableView* v : dataViews) {
+			[v setDataSource:nil];
+			[v setDelegate:nil];
+		}
+		[internal->libraryOutline setDataSource:nil];
+		[internal->libraryOutline setDelegate:nil];
+		if (internal->controller)
+			((RackAXController*) internal->controller)->owner = nullptr;
+
 		if (internal->panel) {
 			[internal->panel orderOut:nil];
 			[internal->panel release];
