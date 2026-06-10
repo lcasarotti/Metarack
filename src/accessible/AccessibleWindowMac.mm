@@ -34,6 +34,8 @@
 #include <engine/Engine.hpp>
 #include <app/common.hpp>
 #include <ui/common.hpp>
+#include <ui/Menu.hpp>
+#include <ui/MenuItem.hpp>
 #include <math.hpp>
 #include <settings.hpp>
 #include <logger.hpp>
@@ -112,6 +114,18 @@ struct AXMenuCmd {
 	std::function<bool()> checked;
 };
 
+// One row of the CONTEXT_MENU list. isSubmenu items push a new menu level on Enter
+// (instead of returning to the previous view); the Cocoa analogue of the Win32
+// ContextMenuItem.
+struct AXContextItem {
+	std::string           label;
+	std::function<void()> action;
+	bool                  isSubmenu;
+
+	AXContextItem(std::string l, std::function<void()> a, bool sub = false)
+		: label(std::move(l)), action(std::move(a)), isSubmenu(sub) {}
+};
+
 struct AccessibleWindow::Internal {
 	NSWindow*    rackWindow  = nil;   // main Rack window; regains key when toggled off
 	NSWindow*    panel       = nil;   // our accessible layer, a child window over Rack
@@ -165,6 +179,17 @@ struct AccessibleWindow::Internal {
 		int             portId = -1;
 		bool            active = false;
 	} pendingCable;
+
+	// CONTEXT_MENU view. contextItems is the level currently shown; menuStack holds the
+	// nested levels (level 0 = the menu the trigger opened). ownedRootMenu / ownedSubmenus
+	// are detached Rack ui::Menus built to read a module's appendContextMenu(); freed by
+	// cleanupContextMenu(). previousView is the view to return to when the menu closes.
+	NSTableView*                            contextTable = nil;  // RackAXContextTableView*
+	AXView                                  previousView = AX_RACK;
+	std::vector<AXContextItem>              contextItems;
+	std::vector<std::vector<AXContextItem>> menuStack;
+	ui::Menu*                               ownedRootMenu = nullptr;
+	std::vector<ui::Menu*>                  ownedSubmenus;
 
 	// LIBRARY tree (brand → models). Built lazily on first show, like the Win32
 	// libraryLoaded flag; libraryRoots is an NSArray of AXLibNode* brands, retained.
@@ -549,6 +574,7 @@ static void hideAllViews(AccessibleWindow::Internal* in) {
 	[[in->paramTable enclosingScrollView] setHidden:YES];
 	[[in->outputTable enclosingScrollView] setHidden:YES];
 	[[in->inputTable enclosingScrollView] setHidden:YES];
+	[[in->contextTable enclosingScrollView] setHidden:YES];
 }
 
 // Show a view's control and focus it. RACK, LIBRARY and PARAM are wired; OUTPUT/INPUT
@@ -616,6 +642,20 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 		if ([t selectedRow] < 0 && [t numberOfRows] > 0)
 			[t selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
 		NSAccessibilityPostNotification(t, NSAccessibilitySelectedRowsChangedNotification);
+		return;
+	}
+	if (v == AX_CONTEXT_MENU) {
+		// contextItems is already populated by showContextMenu() before this call.
+		in->currentView = AX_CONTEXT_MENU;
+		hideAllViews(in);
+		[[in->contextTable enclosingScrollView] setHidden:NO];
+		[in->contextTable reloadData];
+		[in->panel makeFirstResponder:in->contextTable];
+		if ([in->contextTable numberOfRows] > 0)
+			[in->contextTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
+			              byExtendingSelection:NO];
+		NSAccessibilityPostNotification(in->contextTable,
+		    NSAccessibilitySelectedRowsChangedNotification);
 		return;
 	}
 	announce(self, std::string(axViewName(v)) + L(": not yet implemented", ": non ancora implementato"));
@@ -1046,6 +1086,288 @@ static void onPortDelete(AccessibleWindow* self, bool isOutput) {
 	});
 }
 
+// ── CONTEXT_MENU view ────────────────────────────────────────────────────────
+// Free the detached Rack menus built to read a module's appendContextMenu(), and clear
+// the navigation stack. (Display-cell / overlay capture is Phase 7.)
+static void cleanupContextMenu(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	for (ui::Menu* sub : in->ownedSubmenus)
+		delete sub;
+	in->ownedSubmenus.clear();
+	if (in->ownedRootMenu) {
+		delete in->ownedRootMenu;
+		in->ownedRootMenu = nullptr;
+	}
+	in->menuStack.clear();
+}
+
+// Show a freshly built menu level as the CONTEXT_MENU view, remembering the view to
+// return to. Mirrors the Win32 showContextMenu.
+static void showContextMenu(AccessibleWindow* self, std::vector<AXContextItem> items) {
+	self->internal->previousView = self->internal->currentView;
+	self->internal->contextItems = std::move(items);
+	switchTo(self, AX_CONTEXT_MENU);
+}
+
+// Reload the context list with the current level and focus row 0 (used after a submenu
+// push/pop without leaving CONTEXT_MENU).
+static void reloadContextLevel(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	[in->contextTable reloadData];
+	if (!in->contextItems.empty())
+		[in->contextTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
+		             byExtendingSelection:NO];
+	NSAccessibilityPostNotification(in->contextTable,
+	    NSAccessibilitySelectedRowsChangedNotification);
+}
+
+// Convert a Rack ui::Menu into context items. Leaf items call doAction(false) then
+// clean up; submenu items push a new level lazily (createChildMenu is called when the
+// user enters the submenu, not when the parent is built). Mirrors buildItemsFromMenu.
+static std::vector<AXContextItem> buildItemsFromMenu(AccessibleWindow* self, ui::Menu* menu) {
+	std::vector<AXContextItem> items;
+	for (widget::Widget* w : menu->children) {
+		auto* mi = dynamic_cast<ui::MenuItem*>(w);
+		if (!mi)
+			continue;
+
+		std::string label = mi->text;
+		if (!mi->rightText.empty()) {
+			if (mi->rightText.find(CHECKMARK_STRING) != std::string::npos)
+				label += " ✓";          // ✓
+			else if (mi->rightText.find(RIGHT_ARROW) != std::string::npos)
+				label += " ▸";          // ▸
+			else
+				label += "  " + mi->rightText;
+		}
+
+		if (mi->disabled) {
+			label += L(" (unavailable)", " (non disponibile)");
+			items.push_back({label, []() {}, false});
+			continue;
+		}
+
+		// Probe for a submenu; delete the probe (a fresh one is built on demand).
+		ui::Menu* probe = mi->createChildMenu();
+		bool hasSub = (probe != nullptr);
+		delete probe;
+
+		if (hasSub) {
+			items.push_back({label, [self, mi]() {
+				ui::Menu* sub = mi->createChildMenu();
+				if (!sub)
+					return;
+				self->internal->ownedSubmenus.push_back(sub);
+				auto subItems = buildItemsFromMenu(self, sub);
+				self->internal->menuStack.push_back(subItems);
+				self->internal->contextItems = subItems;
+				reloadContextLevel(self);
+			}, true});
+		}
+		else {
+			items.push_back({label, [self, mi]() {
+				mi->doAction(false);
+				cleanupContextMenu(self);
+			}, false});
+		}
+	}
+	return items;
+}
+
+// Standard module context menu (Reset/Randomize/Disconnect/Bypass/Duplicate×2/Delete).
+static void buildModuleContextMenu(AccessibleWindow* self, app::ModuleWidget* mw) {
+	if (!mw || !mw->module)
+		return;
+	bool bypassed = mw->module->isBypassed();
+	std::vector<AXContextItem> items;
+
+	items.push_back({L("Reset parameters", "Azzera parametri"), [self, mw]() {
+		pushCommand(self, [mw]() { mw->resetAction(); });
+	}, false});
+	items.push_back({L("Randomize parameters", "Randomizza parametri"), [self, mw]() {
+		pushCommand(self, [mw]() { mw->randomizeAction(); });
+	}, false});
+	items.push_back({L("Disconnect cables", "Disconnetti cavi"), [self, mw]() {
+		pushCommand(self, [mw]() { mw->disconnectAction(); });
+	}, false});
+	items.push_back({bypassed ? L("Bypass: disable", "Bypass: disattiva")
+	                          : L("Bypass: enable", "Bypass: attiva"), [self, mw, bypassed]() {
+		pushCommand(self, [mw, bypassed]() { mw->bypassAction(!bypassed); });
+	}, false});
+	items.push_back({L("Duplicate (no cables)", "Duplica (senza cavi)"), [self, mw]() {
+		pushCommand(self, [self, mw]() {
+			std::string sname = mw->model ? mw->model->name : "?";
+			mw->cloneAction(false);
+			// cloneAction inserts a ModuleWidget; the lazy RACK list must be refreshed
+			// here or the duplicate stays invisible until the next rebuild.
+			refreshRackView(self);
+			self->internal->rackDirty = false;
+			setStatus(self, L("Module \"", "Modulo \"") + sname + L("\" duplicated.", "\" duplicato."));
+		});
+	}, false});
+	items.push_back({L("Duplicate with cables", "Duplica con cavi"), [self, mw]() {
+		pushCommand(self, [self, mw]() {
+			std::string sname = mw->model ? mw->model->name : "?";
+			mw->cloneAction(true);
+			refreshRackView(self);
+			self->internal->rackDirty = false;
+			setStatus(self, L("Module \"", "Modulo \"") + sname + L("\" duplicated (with cables).", "\" duplicato (con cavi)."));
+		});
+	}, false});
+	items.push_back({L("Delete", "Elimina"), [self, mw]() {
+		std::string sname = mw->model ? mw->model->name : "?";
+		if (!confirm(L("Remove \"", "Rimuovere \"") + sname + L("\"?", "\"?")))
+			return;
+		// previousView is RACK here, so the rack table is shown and its selection is the
+		// focused module; remember its row to land focus on the previous slot.
+		int rowi = (int) [self->internal->rackTable selectedRow];
+		pushCommand(self, [self, mw, sname, rowi]() {
+			engine::Module* mod = mw->module;
+			mw->removeAction();
+			if (self->internal->currentModule == mod)
+				self->internal->currentModule = nullptr;
+			if (self->internal->lastParamModule == mod)
+				self->internal->lastParamModule = nullptr;
+			if (self->internal->pendingCable.module == mod)
+				self->internal->pendingCable.active = false;
+			refreshRackView(self, nullptr, rowi - 1);
+			self->internal->rackDirty = false;
+			setStatus(self, L("Module \"", "Modulo \"") + sname + L("\" removed.", "\" rimosso."));
+		});
+	}, false});
+
+	showContextMenu(self, std::move(items));
+}
+
+// The module's own options (its appendContextMenu override), read into a detached menu
+// and shown as a navigable list. Mirrors buildModuleSpecificContextMenu.
+static void buildModuleSpecificContextMenu(AccessibleWindow* self, app::ModuleWidget* mw) {
+	if (!mw || !mw->module)
+		return;
+	cleanupContextMenu(self);
+
+	ui::Menu* extra = new ui::Menu;
+	mw->appendContextMenu(extra);
+	auto items = buildItemsFromMenu(self, extra);
+	if (items.empty()) {
+		delete extra;
+		setStatus(self, L("No specific options for this module.",
+		                  "Nessuna opzione specifica per questo modulo."));
+		return;
+	}
+	// Keep the detached menu alive while navigating: the item lambdas hold pointers into
+	// its children, and submenus are built on demand. Freed by cleanupContextMenu().
+	self->internal->ownedRootMenu = extra;
+	self->internal->menuStack.push_back(items);   // level 0
+	showContextMenu(self, items);
+}
+
+// Param context menu (Set value… / Reset to default) from the PARAM view.
+static void buildParamContextMenu(AccessibleWindow* self, int paramId) {
+	if (!self->internal->currentModule)
+		return;
+	engine::ParamQuantity* pq = self->internal->currentModule->getParamQuantity(paramId);
+	if (!pq)
+		return;
+	std::vector<AXContextItem> items;
+
+	items.push_back({L("Set value…", "Imposta valore…"), [self, pq]() {
+		std::string prompt = L("Value for «", "Valore per «") + pq->name
+		                     + L("»:\n(e.g.: 440, C4, log2(8), dbtogain(-6))",
+		                         "»:\n(Es: 440, C4, log2(8), dbtogain(-6))");
+		std::string text = showInputDialog(L("Set value", "Imposta valore"), prompt,
+		                                   pq->getDisplayValueString());
+		if (text.empty())
+			return;
+		pq->setDisplayValueString(text);
+		[self->internal->paramTable reloadData];
+		announce(self, pq->getDisplayValueString() + pq->getUnit());
+	}, false});
+	items.push_back({L("Reset to default", "Azzera al valore predefinito"), [self, pq]() {
+		pq->reset();
+		[self->internal->paramTable reloadData];
+		announce(self, pq->getDisplayValueString() + pq->getUnit());
+	}, false});
+
+	showContextMenu(self, std::move(items));
+}
+
+// Enter on a context row: a submenu pushes a new level; a leaf returns to the previous
+// view and fires its action. The item is copied first because a submenu push reassigns
+// contextItems mid-call.
+static void onContextEnter(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSInteger row = [in->contextTable selectedRow];
+	if (row < 0 || row >= (NSInteger) in->contextItems.size())
+		return;
+	AXContextItem item = in->contextItems[row];
+	if (item.isSubmenu) {
+		if (item.action)
+			item.action();
+	}
+	else {
+		switchTo(self, in->previousView);
+		if (item.action)
+			item.action();
+	}
+}
+
+// Escape in the context menu: pop one submenu level, or close the menu and return.
+static void onContextEsc(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (in->menuStack.size() > 1) {
+		if (!in->ownedSubmenus.empty()) {
+			delete in->ownedSubmenus.back();
+			in->ownedSubmenus.pop_back();
+		}
+		in->menuStack.pop_back();
+		in->contextItems = in->menuStack.back();
+		reloadContextLevel(self);
+	}
+	else {
+		AXView prev = in->previousView;
+		cleanupContextMenu(self);
+		switchTo(self, prev);
+	}
+}
+
+// Generic context-menu trigger (Cmd+M): the module menu in RACK, the param menu in
+// PARAM. No-op elsewhere (mirrors the Win32 handleContextMenuKey).
+static void onContextMenuKey(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (in->currentView == AX_RACK) {
+		AXRow* r = focusedRackRow(self);
+		if (!r || r->freeSlot)
+			return;
+		buildModuleContextMenu(self, r->mw);
+	}
+	else if (in->currentView == AX_PARAM) {
+		NSInteger row = [in->paramTable selectedRow];
+		if (row < 0 || row >= (NSInteger) in->paramRows.size() || !in->currentModule)
+			return;
+		buildParamContextMenu(self, in->paramRows[row]);
+	}
+}
+
+// Module-specific trigger (Cmd+Shift+M): the focused module in RACK, otherwise the
+// currentModule whose detail view is open. Mirrors handleModuleSpecificContextMenuKey.
+static void onModuleSpecificContextMenuKey(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	app::ModuleWidget* mw = nullptr;
+	if (in->currentView == AX_RACK) {
+		AXRow* r = focusedRackRow(self);
+		if (!r || r->freeSlot)
+			return;
+		mw = r->mw;
+	}
+	else if (in->currentModule && APP && APP->scene && APP->scene->rack) {
+		mw = APP->scene->rack->getModule(in->currentModule->id);
+	}
+	if (!mw)
+		return;
+	buildModuleSpecificContextMenu(self, mw);
+}
+
 // ── Show / hide ──────────────────────────────────────────────────────────────
 static void setLayerVisible(AccessibleWindow* self, bool show) {
 	AccessibleWindow::Internal* in = self->internal;
@@ -1094,6 +1416,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		return in->currentModule ? in->currentModule->getNumOutputs() : 0;
 	if (tv == in->inputTable)
 		return in->currentModule ? in->currentModule->getNumInputs() : 0;
+	if (tv == in->contextTable)
+		return (NSInteger) in->contextItems.size();
 	return (NSInteger) in->rackRows.size();
 }
 - (id)tableView:(NSTableView*)tv objectValueForTableColumn:(NSTableColumn*)col row:(NSInteger)row {
@@ -1133,6 +1457,13 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		std::string name = info ? info->getName()
 		                        : (rack::accessible::L("Port ", "Porta ") + std::to_string(portId));
 		return [NSString stringWithUTF8String:name.c_str()];
+	}
+
+	// CONTEXT_MENU table: single column of item labels.
+	if (tv == in->contextTable) {
+		if (row < 0 || row >= (NSInteger) in->contextItems.size())
+			return @"";
+		return [NSString stringWithUTF8String:in->contextItems[row].label.c_str()];
 	}
 
 	auto& rows = in->rackRows;
@@ -1186,8 +1517,15 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		return;
 	}
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-	// Cmd-combos belong to the menu bar (Phase 2); let them through.
 	if (m & NSEventModifierFlagCommand) {
+		// Cmd+M / Cmd+Shift+M open the context menus; other Cmd-combos go to the menu bar.
+		if ([[[e charactersIgnoringModifiers] lowercaseString] isEqualToString:@"m"]) {
+			if (m & NSEventModifierFlagShift)
+				onModuleSpecificContextMenuKey(owner);
+			else
+				onContextMenuKey(owner);
+			return;
+		}
 		[super keyDown:e];
 		return;
 	}
@@ -1252,8 +1590,15 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	if (kc == 123) { onParamKey(owner, 'L', cmd, shift); return; }  // Left → step down
 	if (kc == 124) { onParamKey(owner, 'R', cmd, shift); return; }  // Right → step up
 
-	// Any other Cmd-combo belongs to the menu bar (e.g. ⌘Z); let it through.
 	if (cmd) {
+		// Cmd+M / Cmd+Shift+M open the context menus; other Cmd-combos go to the menu bar.
+		if ([ch isEqualToString:@"m"]) {
+			if (shift)
+				onModuleSpecificContextMenuKey(owner);
+			else
+				onContextMenuKey(owner);
+			return;
+		}
 		[super keyDown:e];
 		return;
 	}
@@ -1312,7 +1657,13 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		return;
 	}
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-	if (m & NSEventModifierFlagCommand) {   // Cmd-combos belong to the menu bar
+	if (m & NSEventModifierFlagCommand) {
+		// Cmd+Shift+M opens the module-specific menu; other Cmd-combos go to the menu bar.
+		if ([[[e charactersIgnoringModifiers] lowercaseString] isEqualToString:@"m"]) {
+			if (m & NSEventModifierFlagShift)
+				onModuleSpecificContextMenuKey(owner);
+			return;
+		}
 		[super keyDown:e];
 		return;
 	}
@@ -1343,6 +1694,34 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	}
 	if (shift && [ch isEqualToString:@"r"]) { switchTo(owner, AX_RACK); return; }
 	if (shift && [ch isEqualToString:@"l"]) { switchTo(owner, AX_LIBRARY); return; }
+	[super keyDown:e];
+}
+@end
+
+// NSTableView for the CONTEXT_MENU list (single column). Up/Down navigate natively;
+// Enter activates a row (submenu push or leaf action), Escape pops a level or closes.
+// Cmd-combos pass through so the trigger can't re-fire while the menu is open.
+@interface RackAXContextTableView : NSTableView {
+@public
+	rack::accessible::AccessibleWindow* owner;
+}
+@end
+
+@implementation RackAXContextTableView
+- (void)keyDown:(NSEvent*)e {
+	using namespace rack::accessible;
+	if (!owner || !owner->internal) {
+		[super keyDown:e];
+		return;
+	}
+	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+	if (m & NSEventModifierFlagCommand) {
+		[super keyDown:e];
+		return;
+	}
+	unsigned short kc = e.keyCode;
+	if (kc == 36 || kc == 76) { onContextEnter(owner); return; }  // Return → activate
+	if (kc == 53)             { onContextEsc(owner); return; }    // Escape → pop / close
 	[super keyDown:e];
 }
 @end
@@ -1422,6 +1801,8 @@ namespace accessible {
 // Clear pointers that a patch load / undo / paste may have invalidated, then rebuild
 // the RACK list. Mirrors the Win32 reloadRackAfterMutation.
 static void reloadRackAfterMutation(AccessibleWindow* self) {
+	// A patch load / undo / paste may have destroyed the modules these point at.
+	cleanupContextMenu(self);
 	self->internal->currentModule = nullptr;
 	self->internal->lastParamModule = nullptr;
 	self->internal->pendingCable.active = false;
@@ -1975,6 +2356,32 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	self->internal->outputTable = buildPortTable(self, content, controller, true, w, h);
 	self->internal->inputTable  = buildPortTable(self, content, controller, false, w, h);
 
+	// CONTEXT_MENU table: single column, same geometry, hidden until switched to.
+	NSScrollView* ctxScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	[ctxScroll setHasVerticalScroller:YES];
+	[ctxScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+	[ctxScroll setHidden:YES];
+
+	RackAXContextTableView* ctxTable = [[RackAXContextTableView alloc]
+	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	ctxTable->owner = self;
+	NSTableColumn* ctxCol = [[NSTableColumn alloc] initWithIdentifier:@"ctx"];
+	[ctxCol setWidth:w > 80 ? w - 40 : 800];
+	[ctxCol setEditable:NO];
+	[ctxTable addTableColumn:ctxCol];
+	[ctxCol release];
+	[ctxTable setHeaderView:nil];
+	[ctxTable setAllowsMultipleSelection:NO];
+	[ctxTable setAllowsEmptySelection:YES];
+	[ctxTable setColumnAutoresizingStyle:NSTableViewUniformColumnAutoresizingStyle];
+	[ctxTable setDataSource:controller];
+	[ctxTable setDelegate:controller];
+	[ctxScroll setDocumentView:ctxTable];
+	[ctxTable release];
+	[content addSubview:ctxScroll];
+	[ctxScroll release];
+	self->internal->contextTable = ctxTable;
+
 	instance = self;
 
 	// Native menu bar (App/File/Edit/View/Engine/Library/Help). Its key equivalents
@@ -1992,6 +2399,7 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 AccessibleWindow::~AccessibleWindow() {
 	if (internal) {
 		[NSApp setMainMenu:nil];
+		cleanupContextMenu(this);   // free any detached appendContextMenu() menus
 		if (internal->panel) {
 			[internal->panel orderOut:nil];
 			[internal->panel release];
