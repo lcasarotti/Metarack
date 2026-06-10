@@ -1,7 +1,7 @@
 RACK_DIR ?= .
 RACK_EDITION := Free
 RACK_VERSION_MAJOR := 2
-RACK_VERSION ?= $(patsubst v%,%,$(shell git describe --tags --match "v$(RACK_VERSION_MAJOR).*"))
+RACK_VERSION ?= $(patsubst v%,%,$(shell git describe --tags --match "v$(RACK_VERSION_MAJOR).*" 2>/dev/null))
 # This fork carries no v2.* git tags, so `git describe` returns nothing and RACK_VERSION
 # is empty. An empty APP_VERSION makes the built-in Core plugin fail to load with "No
 # plugin version" (Plugin::fromJson), which silently drops the entire VCV brand — and all
