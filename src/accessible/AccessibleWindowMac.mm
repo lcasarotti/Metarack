@@ -19,11 +19,14 @@
 #include <app/RackWidget.hpp>
 #include <app/RackScrollWidget.hpp>
 #include <app/ModuleWidget.hpp>
+#include <app/ParamWidget.hpp>
+#include <app/Switch.hpp>
 #include <app/TipWindow.hpp>
 #include <plugin/Model.hpp>
 #include <plugin/Plugin.hpp>
 #include <plugin.hpp>
 #include <engine/Module.hpp>
+#include <engine/ParamQuantity.hpp>
 #include <engine/Engine.hpp>
 #include <app/common.hpp>
 #include <ui/common.hpp>
@@ -111,6 +114,7 @@ struct AccessibleWindow::Internal {
 	id           controller  = nil;   // RackAXController* (datasource/delegate), retained
 	NSTableView*   rackTable     = nil; // RackAXTableView*, owned by the view hierarchy
 	NSOutlineView* libraryOutline = nil; // RackAXOutlineView*, owned by the view hierarchy
+	NSTableView*   paramTable    = nil; // RackAXParamTableView* (2 columns), owned by the hierarchy
 	NSTextField*   statusLabel   = nil; // status line at the bottom of the panel
 	bool           visible       = false;
 
@@ -127,6 +131,21 @@ struct AccessibleWindow::Internal {
 	bool            rackDirty     = true;      // rebuild the RACK list on next show
 
 	std::vector<AXRow> rackRows;
+
+	// PARAM view. paramRows maps each table row to a param id (params with an empty
+	// name are skipped). lastParamModule guards the rebuild: the list is only
+	// repopulated when the focused module changes, so revisits keep focus/scroll.
+	std::vector<int> paramRows;
+	engine::Module*  lastParamModule = nullptr;
+
+	// Momentary pulse (the Cocoa replacement for the Win32 SetTimer release): a single
+	// Space on a momentary button sets the param high now; drainCommands() drops it
+	// back to rest once momentaryReleaseTime passes — long enough for the audio thread
+	// to sample the rising edge. minValue is restored only after re-validating the
+	// module against the engine (it may have been removed during the brief high window).
+	engine::Module* momentaryModule     = nullptr;
+	int             momentaryParamId    = -1;
+	double          momentaryReleaseTime = 0.0;
 
 	// LIBRARY tree (brand → models). Built lazily on first show, like the Win32
 	// libraryLoaded flag; libraryRoots is an NSArray of AXLibNode* brands, retained.
@@ -438,6 +457,27 @@ static void placeModule(AccessibleWindow* self, plugin::Model* model, int gridX,
 	setStatus(self, L("Module \"", "Modulo \"") + model->name + L("\" added.", "\" aggiunto."));
 }
 
+// ── Param view ───────────────────────────────────────────────────────────────
+// How long a momentary button is held high before drainCommands() releases it.
+static const double MOMENTARY_SEC = 0.08;
+
+// Build the PARAM row list for currentModule: one row per param with a non-empty
+// name. Rows store only the param id; the datasource reads name + value live from
+// the ParamQuantity, so re-reads (after an edit) always reflect the engine.
+static void refreshParamView(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	in->paramRows.clear();
+	if (engine::Module* m = in->currentModule) {
+		for (int i = 0; i < m->getNumParams(); i++) {
+			engine::ParamQuantity* pq = m->getParamQuantity(i);
+			if (!pq || pq->name.empty())
+				continue;
+			in->paramRows.push_back(i);
+		}
+	}
+	[in->paramTable reloadData];
+}
+
 static const char* axViewName(AXView v) {
 	switch (v) {
 		case AX_LIBRARY: return "Library";
@@ -448,13 +488,21 @@ static const char* axViewName(AXView v) {
 	}
 }
 
-// Show a view's control and focus it. Only RACK is wired in this phase; the others
-// announce a placeholder so the keys are testable end to end before their phase.
+// Hide every view's scroll view; the caller then unhides the one it shows. Keeping
+// this in one place means each new view only has to reveal itself.
+static void hideAllViews(AccessibleWindow::Internal* in) {
+	[[in->rackTable enclosingScrollView] setHidden:YES];
+	[[in->libraryOutline enclosingScrollView] setHidden:YES];
+	[[in->paramTable enclosingScrollView] setHidden:YES];
+}
+
+// Show a view's control and focus it. RACK, LIBRARY and PARAM are wired; OUTPUT/INPUT
+// and CONTEXT_MENU still announce a placeholder until their phase lands.
 static void switchTo(AccessibleWindow* self, AXView v) {
 	AccessibleWindow::Internal* in = self->internal;
 	if (v == AX_RACK) {
 		in->currentView = AX_RACK;
-		[[in->libraryOutline enclosingScrollView] setHidden:YES];
+		hideAllViews(in);
 		[[in->rackTable enclosingScrollView] setHidden:NO];
 		if (in->rackDirty) {
 			refreshRackView(self);
@@ -470,7 +518,7 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 	}
 	if (v == AX_LIBRARY) {
 		in->currentView = AX_LIBRARY;
-		[[in->rackTable enclosingScrollView] setHidden:YES];
+		hideAllViews(in);
 		[[in->libraryOutline enclosingScrollView] setHidden:NO];
 		if (!in->libraryLoaded) {
 			refreshLibraryView(self);
@@ -481,6 +529,23 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 			[in->libraryOutline selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
 			               byExtendingSelection:NO];
 		NSAccessibilityPostNotification(in->libraryOutline,
+		    NSAccessibilitySelectedRowsChangedNotification);
+		return;
+	}
+	if (v == AX_PARAM) {
+		in->currentView = AX_PARAM;
+		hideAllViews(in);
+		[[in->paramTable enclosingScrollView] setHidden:NO];
+		// Rebuild only when the target module changed, so revisits keep focus/scroll.
+		if (in->currentModule != in->lastParamModule) {
+			refreshParamView(self);
+			in->lastParamModule = in->currentModule;
+		}
+		[in->panel makeFirstResponder:in->paramTable];
+		if ([in->paramTable selectedRow] < 0 && !in->paramRows.empty())
+			[in->paramTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
+			           byExtendingSelection:NO];
+		NSAccessibilityPostNotification(in->paramTable,
 		    NSAccessibilitySelectedRowsChangedNotification);
 		return;
 	}
@@ -497,6 +562,33 @@ static bool confirm(const std::string& msg) {
 	NSModalResponse r = [a runModal];
 	[a release];
 	return r == NSAlertFirstButtonReturn;
+}
+
+// Modal single-line text prompt (the Win32 showInputDialog equivalent). Returns the
+// entered text, or "" if cancelled. The accessory text field is the initial first
+// responder so VoiceOver lands in it and the user can type immediately.
+static std::string showInputDialog(const std::string& title, const std::string& prompt,
+                                   const std::string& initial) {
+	NSAlert* a = [[NSAlert alloc] init];
+	[a setMessageText:nsstr(title)];
+	[a setInformativeText:nsstr(prompt)];
+	[a addButtonWithTitle:nsstr(L("OK", "OK"))];
+	[a addButtonWithTitle:nsstr(L("Cancel", "Annulla"))];
+
+	NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+	[input setStringValue:nsstr(initial)];
+	[a setAccessoryView:input];
+	[[a window] setInitialFirstResponder:input];
+
+	NSModalResponse r = [a runModal];
+	std::string result;
+	if (r == NSAlertFirstButtonReturn) {
+		const char* s = [[input stringValue] UTF8String];
+		result = s ? s : "";
+	}
+	[input release];
+	[a release];
+	return result;
 }
 
 // ── RACK key handlers ────────────────────────────────────────────────────────
@@ -608,6 +700,7 @@ static void onRackDelete(AccessibleWindow* self) {
 		if (confirm(L("Delete ", "Eliminare ") + std::to_string(n) + L(" modules?", " moduli?"))) {
 			pushCommand(self, [self, n]() {
 				self->internal->currentModule = nullptr;
+				self->internal->lastParamModule = nullptr;
 				APP->scene->rack->deleteSelectionAction();
 				refreshRackView(self, nullptr, 0);
 				self->internal->rackDirty = false;
@@ -633,6 +726,8 @@ static void onRackDelete(AccessibleWindow* self) {
 			mw->removeAction();
 			if (self->internal->currentModule == mod)
 				self->internal->currentModule = nullptr;
+			if (self->internal->lastParamModule == mod)
+				self->internal->lastParamModule = nullptr;
 			refreshRackView(self, nullptr, rowi - 1);
 			self->internal->rackDirty = false;
 			setStatus(self, L("Module \"", "Modulo \"") + sname + L("\" removed.", "\" rimosso."));
@@ -646,6 +741,95 @@ static void onRackPOI(AccessibleWindow* self, char which) {
 		return;
 	self->internal->currentModule = r->mw->module;
 	switchTo(self, which == 'P' ? AX_PARAM : (which == 'O' ? AX_OUTPUT : AX_INPUT));
+}
+
+// ── PARAM key handlers ───────────────────────────────────────────────────────
+// The ParamQuantity behind the focused row, or nullptr. Fills *outRow with the row.
+static engine::ParamQuantity* focusedParam(AccessibleWindow* self, int* outRow) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSInteger row = [in->paramTable selectedRow];
+	if (row < 0 || row >= (NSInteger) in->paramRows.size() || !in->currentModule)
+		return nullptr;
+	if (outRow)
+		*outRow = (int) row;
+	return in->currentModule->getParamQuantity(in->paramRows[row]);
+}
+
+// True if the param's on-screen widget is a momentary Switch. The momentary flag
+// lives on app::Switch, not the ParamQuantity, so we reach the live widget. Mirrors
+// the Win32 isMomentaryParam.
+static bool isMomentaryParam(AccessibleWindow* self, int paramId) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (!in->currentModule || !APP || !APP->scene || !APP->scene->rack)
+		return false;
+	app::ModuleWidget* mw = APP->scene->rack->getModule(in->currentModule->id);
+	if (!mw)
+		return false;
+	auto* sw = dynamic_cast<app::Switch*>(mw->getParam(paramId));
+	return sw && sw->momentary;
+}
+
+// One PARAM action. 'L'/'R' step left/right (cmd = fine, shift = coarse, both =
+// very fine), 'B' resets to default, 'V' opens the value dialog, 'S' (Space) toggles
+// a snap switch / pulses a momentary one. Param edits don't touch the widget tree or
+// GL, so — like the Win32 handler — they run synchronously here, not via the queue.
+static void onParamKey(AccessibleWindow* self, char which, bool cmd, bool shift) {
+	int row = -1;
+	engine::ParamQuantity* pq = focusedParam(self, &row);
+	if (!pq)
+		return;
+
+	if (which == 'B') {                       // Backspace → reset to default
+		pq->reset();
+	}
+	else if (which == 'V') {                  // V / Enter → value dialog
+		std::string prompt = L("Value for «", "Valore per «") + pq->name
+		                     + L("»:\n(e.g.: 440, C4, log2(8), dbtogain(-6))",
+		                         "»:\n(Es: 440, C4, log2(8), dbtogain(-6))");
+		std::string text = showInputDialog(L("Set value", "Imposta valore"), prompt,
+		                                   pq->getDisplayValueString());
+		if (text.empty())
+			return;
+		pq->setDisplayValueString(text);
+	}
+	else if (which == 'S') {                  // Space → toggle switch / pulse momentary
+		if (!pq->snapEnabled)                 // only meaningful for switches
+			return;
+		int paramId = self->internal->paramRows[row];
+		if (isMomentaryParam(self, paramId)) {
+			pq->setValue(pq->maxValue);
+			self->internal->momentaryModule = self->internal->currentModule;
+			self->internal->momentaryParamId = paramId;
+			self->internal->momentaryReleaseTime = system::getTime() + MOMENTARY_SEC;
+		}
+		else {
+			float next = std::round(pq->getValue()) + 1.f;
+			if (next > pq->maxValue)
+				next = pq->minValue;
+			pq->setValue(next);
+		}
+	}
+	else {                                    // Left / Right → step
+		float cur  = pq->getValue();
+		float step = (pq->maxValue - pq->minValue) / 100.f;
+		if (cmd && shift)
+			step *= (1.f / 100.f);            // very fine
+		else if (cmd)
+			step *= (1.f / 10.f);             // fine
+		else if (shift)
+			step *= 4.f;                      // coarse
+		float next = (which == 'R') ? cur + step : cur - step;
+		if (pq->snapEnabled)
+			next = std::round(next);
+		next = math::clamp(next, pq->minValue, pq->maxValue);
+		pq->setValue(next);
+	}
+
+	// Re-read just this row's value cell and speak the new value. These are discrete
+	// key presses (not a periodic refresh), so the announcement won't drown the audio.
+	[self->internal->paramTable reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+	                                      columnIndexes:[NSIndexSet indexSetWithIndex:1]];
+	announce(self, pq->getDisplayValueString() + pq->getUnit());
 }
 
 // ── Show / hide ──────────────────────────────────────────────────────────────
@@ -689,12 +873,29 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 - (NSInteger)numberOfRowsInTableView:(NSTableView*)tv {
 	if (!owner || !owner->internal)
 		return 0;
+	if (tv == owner->internal->paramTable)
+		return (NSInteger) owner->internal->paramRows.size();
 	return (NSInteger) owner->internal->rackRows.size();
 }
 - (id)tableView:(NSTableView*)tv objectValueForTableColumn:(NSTableColumn*)col row:(NSInteger)row {
 	if (!owner || !owner->internal)
 		return @"";
-	auto& rows = owner->internal->rackRows;
+	rack::accessible::AccessibleWindow::Internal* in = owner->internal;
+
+	// PARAM table: two columns (name, value) read live from the ParamQuantity, so a
+	// reload after an edit always shows the engine's current value.
+	if (tv == in->paramTable) {
+		if (row < 0 || row >= (NSInteger) in->paramRows.size() || !in->currentModule)
+			return @"";
+		engine::ParamQuantity* pq = in->currentModule->getParamQuantity(in->paramRows[row]);
+		if (!pq)
+			return @"";
+		if ([[col identifier] isEqualToString:@"pvalue"])
+			return [NSString stringWithUTF8String:(pq->getDisplayValueString() + pq->getUnit()).c_str()];
+		return [NSString stringWithUTF8String:pq->name.c_str()];
+	}
+
+	auto& rows = in->rackRows;
 	if (row < 0 || row >= (NSInteger) rows.size())
 		return @"";
 	return [NSString stringWithUTF8String:rows[row].label.c_str()];
@@ -782,6 +983,67 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 }
 @end
 
+// NSTableView for the PARAM list (2 columns). Up/Down navigate rows natively (VoiceOver
+// reads name + value); we intercept the editing keys. Arrow Left/Right are handled even
+// with Cmd held, since no menu item claims Cmd+Arrow — Cmd/Shift only pick the step size.
+@interface RackAXParamTableView : NSTableView {
+@public
+	rack::accessible::AccessibleWindow* owner;
+}
+@end
+
+@implementation RackAXParamTableView
+- (void)keyDown:(NSEvent*)e {
+	using namespace rack::accessible;
+	if (!owner || !owner->internal) {
+		[super keyDown:e];
+		return;
+	}
+	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+	unsigned short kc = e.keyCode;
+	NSString* ch = [[e charactersIgnoringModifiers] lowercaseString];
+	bool shift = (m & NSEventModifierFlagShift) != 0;
+	bool cmd   = (m & NSEventModifierFlagCommand) != 0;
+
+	if (kc == 123) { onParamKey(owner, 'L', cmd, shift); return; }  // Left → step down
+	if (kc == 124) { onParamKey(owner, 'R', cmd, shift); return; }  // Right → step up
+
+	// Any other Cmd-combo belongs to the menu bar (e.g. ⌘Z); let it through.
+	if (cmd) {
+		[super keyDown:e];
+		return;
+	}
+
+	if (kc == 36 || kc == 76) { onParamKey(owner, 'V', false, false); return; } // Return → value
+	if (kc == 51)             { onParamKey(owner, 'B', false, false); return; } // Backspace → reset
+	if (kc == 49)             { onParamKey(owner, 'S', false, false); return; } // Space → toggle/pulse
+	if (kc == 53) { switchTo(owner, AX_RACK); return; }                         // Escape → RACK
+
+	if (kc == 48) {                                // Tab / Shift+Tab → cycle detail views
+		AXView cycle[3] = {AX_PARAM, AX_OUTPUT, AX_INPUT};
+		for (int i = 0; i < 3; i++) {
+			if (owner->internal->currentView == cycle[i]) {
+				if (!owner->internal->currentModule)
+					return;
+				int nx = shift ? (i + 2) % 3 : (i + 1) % 3;
+				switchTo(owner, cycle[nx]);
+				return;
+			}
+		}
+		return;
+	}
+
+	if (shift && [ch isEqualToString:@"r"]) { switchTo(owner, AX_RACK); return; }
+	if (shift && [ch isEqualToString:@"l"]) { switchTo(owner, AX_LIBRARY); return; }
+	if ([ch isEqualToString:@"v"]) { onParamKey(owner, 'V', false, false); return; }
+	if ([ch isEqualToString:@"d"]) {
+		announce(owner, L("Display cells: not yet implemented", "Celle display: non ancora implementato"));
+		return;
+	}
+	[super keyDown:e];
+}
+@end
+
 // NSOutlineView for the LIBRARY tree. Up/Down navigate and Left/Right collapse/expand
 // natively (VoiceOver reads each item); we only intercept Enter (select/toggle), Escape
 // and Shift+R (back to RACK). Mirrors the Win32 treeLibrary subclass.
@@ -856,6 +1118,7 @@ namespace accessible {
 // the RACK list. Mirrors the Win32 reloadRackAfterMutation.
 static void reloadRackAfterMutation(AccessibleWindow* self) {
 	self->internal->currentModule = nullptr;
+	self->internal->lastParamModule = nullptr;
 	self->internal->rackDirty = true;
 	if (self->internal->visible)
 		switchTo(self, AX_RACK);
@@ -1328,6 +1591,40 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	[libScroll release];
 	self->internal->libraryOutline = outline;
 
+	// PARAM table: two columns (name, value), same geometry, hidden until switched to.
+	NSScrollView* paramScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	[paramScroll setHasVerticalScroller:YES];
+	[paramScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+	[paramScroll setHidden:YES];
+
+	RackAXParamTableView* paramTable = [[RackAXParamTableView alloc]
+	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	paramTable->owner = self;
+	CGFloat pcw = w > 80 ? (w - 40) / 2 : 400;
+	NSTableColumn* pcName = [[NSTableColumn alloc] initWithIdentifier:@"pname"];
+	[pcName setTitle:nsstr(L("Parameter", "Parametro"))];
+	[pcName setWidth:pcw];
+	[pcName setEditable:NO];
+	[paramTable addTableColumn:pcName];
+	[pcName release];
+	NSTableColumn* pcValue = [[NSTableColumn alloc] initWithIdentifier:@"pvalue"];
+	[pcValue setTitle:nsstr(L("Value", "Valore"))];
+	[pcValue setWidth:pcw];
+	[pcValue setEditable:NO];
+	[paramTable addTableColumn:pcValue];
+	[pcValue release];
+	[paramTable setHeaderView:nil];
+	[paramTable setAllowsMultipleSelection:NO];
+	[paramTable setAllowsEmptySelection:YES];
+	[paramTable setColumnAutoresizingStyle:NSTableViewUniformColumnAutoresizingStyle];
+	[paramTable setDataSource:controller];
+	[paramTable setDelegate:controller];
+	[paramScroll setDocumentView:paramTable];
+	[paramTable release];
+	[content addSubview:paramScroll];
+	[paramScroll release];
+	self->internal->paramTable = paramTable;
+
 	instance = self;
 
 	// Native menu bar (App/File/Edit/View/Engine/Library/Help). Its key equivalents
@@ -1365,6 +1662,20 @@ AccessibleWindow::~AccessibleWindow() {
 void AccessibleWindow::drainCommands() {
 	if (!internal)
 		return;
+
+	// Release a momentary button once its high window elapses (the Win32 SetTimer
+	// equivalent, polled from the main loop). Re-validate the module against the
+	// engine first: it may have been removed during the brief high window.
+	if (internal->momentaryModule && system::getTime() >= internal->momentaryReleaseTime) {
+		engine::Module* mod = internal->momentaryModule;
+		if (APP && APP->engine && APP->engine->getModule(mod->id) == mod) {
+			if (engine::ParamQuantity* pq = mod->getParamQuantity(internal->momentaryParamId))
+				pq->setValue(pq->minValue);
+		}
+		internal->momentaryModule = nullptr;
+		internal->momentaryParamId = -1;
+	}
+
 	std::vector<std::function<void()>> q;
 	q.swap(internal->commandQueue);
 	for (auto& fn : q)
