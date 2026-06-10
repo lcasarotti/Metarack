@@ -21,12 +21,16 @@
 #include <app/ModuleWidget.hpp>
 #include <app/ParamWidget.hpp>
 #include <app/Switch.hpp>
+#include <app/PortWidget.hpp>
+#include <app/CableWidget.hpp>
 #include <app/TipWindow.hpp>
 #include <plugin/Model.hpp>
 #include <plugin/Plugin.hpp>
 #include <plugin.hpp>
 #include <engine/Module.hpp>
 #include <engine/ParamQuantity.hpp>
+#include <engine/Port.hpp>
+#include <engine/PortInfo.hpp>
 #include <engine/Engine.hpp>
 #include <app/common.hpp>
 #include <ui/common.hpp>
@@ -146,6 +150,21 @@ struct AccessibleWindow::Internal {
 	engine::Module* momentaryModule     = nullptr;
 	int             momentaryParamId    = -1;
 	double          momentaryReleaseTime = 0.0;
+
+	// OUTPUT / INPUT views. One 2-column NSTableView each (Port / Cable). Every port is
+	// a row, so the row index is the port id — no row vector, status read live.
+	NSTableView* outputTable = nil;  // RackAXPortTableView*, isOutput = YES
+	NSTableView* inputTable  = nil;  // RackAXPortTableView*, isOutput = NO
+
+	// Two-step cable connection: the first Enter on a port arms this; the second Enter
+	// on a compatible port (any module) completes it. Reset when the patch mutates or
+	// the armed module is deleted, so the captured pointer can't dangle.
+	struct {
+		int             type   = 0;        // engine::Port::OUTPUT / INPUT
+		engine::Module* module = nullptr;
+		int             portId = -1;
+		bool            active = false;
+	} pendingCable;
 
 	// LIBRARY tree (brand → models). Built lazily on first show, like the Win32
 	// libraryLoaded flag; libraryRoots is an NSArray of AXLibNode* brands, retained.
@@ -478,6 +497,40 @@ static void refreshParamView(AccessibleWindow* self) {
 	[in->paramTable reloadData];
 }
 
+// ── Port views ───────────────────────────────────────────────────────────────
+// Cable status of one port: "free", "→ RemoteModule", or "connected" if the remote
+// has no model. Reaches the live PortWidget to query its cables. Mirrors the status
+// column the Win32 refreshPortView builds. Only the first cable is reported (parity
+// with Win32; an output can carry several).
+static std::string portStatusString(engine::Module* mod, bool isOutput, int portId) {
+	std::string status = L("free", "libero");
+	if (!mod || !APP || !APP->scene || !APP->scene->rack)
+		return status;
+	app::ModuleWidget* mw = APP->scene->rack->getModule(mod->id);
+	if (!mw)
+		return status;
+	app::PortWidget* pw = isOutput ? mw->getOutput(portId) : mw->getInput(portId);
+	if (!pw)
+		return status;
+	auto cables = APP->scene->rack->getCompleteCablesOnPort(pw);
+	if (cables.empty())
+		return status;
+	app::CableWidget* cw = cables[0];
+	app::PortWidget* remote = isOutput ? cw->inputPort : cw->outputPort;
+	if (remote && remote->module && remote->module->model)
+		status = "→ " + remote->module->model->name;
+	else if (remote)
+		status = L("connected", "connesso");
+	return status;
+}
+
+// Rebuild a port list. Rows are read live from currentModule, so this is just a
+// reload; the caller handles focus.
+static void refreshPortView(AccessibleWindow* self, bool isOutput) {
+	NSTableView* t = isOutput ? self->internal->outputTable : self->internal->inputTable;
+	[t reloadData];
+}
+
 static const char* axViewName(AXView v) {
 	switch (v) {
 		case AX_LIBRARY: return "Library";
@@ -494,6 +547,8 @@ static void hideAllViews(AccessibleWindow::Internal* in) {
 	[[in->rackTable enclosingScrollView] setHidden:YES];
 	[[in->libraryOutline enclosingScrollView] setHidden:YES];
 	[[in->paramTable enclosingScrollView] setHidden:YES];
+	[[in->outputTable enclosingScrollView] setHidden:YES];
+	[[in->inputTable enclosingScrollView] setHidden:YES];
 }
 
 // Show a view's control and focus it. RACK, LIBRARY and PARAM are wired; OUTPUT/INPUT
@@ -547,6 +602,20 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 			           byExtendingSelection:NO];
 		NSAccessibilityPostNotification(in->paramTable,
 		    NSAccessibilitySelectedRowsChangedNotification);
+		return;
+	}
+	if (v == AX_OUTPUT || v == AX_INPUT) {
+		bool isOutput = (v == AX_OUTPUT);
+		in->currentView = v;
+		hideAllViews(in);
+		NSTableView* t = isOutput ? in->outputTable : in->inputTable;
+		[[t enclosingScrollView] setHidden:NO];
+		// Always rebuild: cable state may have changed in the GUI or from a connection.
+		refreshPortView(self, isOutput);
+		[in->panel makeFirstResponder:t];
+		if ([t selectedRow] < 0 && [t numberOfRows] > 0)
+			[t selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+		NSAccessibilityPostNotification(t, NSAccessibilitySelectedRowsChangedNotification);
 		return;
 	}
 	announce(self, std::string(axViewName(v)) + L(": not yet implemented", ": non ancora implementato"));
@@ -701,6 +770,7 @@ static void onRackDelete(AccessibleWindow* self) {
 			pushCommand(self, [self, n]() {
 				self->internal->currentModule = nullptr;
 				self->internal->lastParamModule = nullptr;
+				self->internal->pendingCable.active = false;
 				APP->scene->rack->deleteSelectionAction();
 				refreshRackView(self, nullptr, 0);
 				self->internal->rackDirty = false;
@@ -728,6 +798,8 @@ static void onRackDelete(AccessibleWindow* self) {
 				self->internal->currentModule = nullptr;
 			if (self->internal->lastParamModule == mod)
 				self->internal->lastParamModule = nullptr;
+			if (self->internal->pendingCable.module == mod)
+				self->internal->pendingCable.active = false;
 			refreshRackView(self, nullptr, rowi - 1);
 			self->internal->rackDirty = false;
 			setStatus(self, L("Module \"", "Modulo \"") + sname + L("\" removed.", "\" rimosso."));
@@ -832,6 +904,148 @@ static void onParamKey(AccessibleWindow* self, char which, bool cmd, bool shift)
 	announce(self, pq->getDisplayValueString() + pq->getUnit());
 }
 
+// ── PORT key handlers ────────────────────────────────────────────────────────
+// Cancel an armed connection if one is pending; returns true if it did. Called from
+// every view's Escape so the user can always back out of a two-step connection.
+static bool cancelPendingCable(AccessibleWindow* self) {
+	if (!self->internal->pendingCable.active)
+		return false;
+	self->internal->pendingCable.active = false;
+	setStatus(self, L("Connection cancelled.", "Connessione annullata."));
+	return true;
+}
+
+// Focus the row for portId (row index == portId) and let VoiceOver read it. Used
+// after a connect/disconnect to confirm the new state.
+static void focusPortRow(AccessibleWindow* self, bool isOutput, int portId) {
+	NSTableView* t = isOutput ? self->internal->outputTable : self->internal->inputTable;
+	if (portId >= 0 && portId < [t numberOfRows]) {
+		[t selectRowIndexes:[NSIndexSet indexSetWithIndex:portId] byExtendingSelection:NO];
+		[t scrollRowToVisible:portId];
+	}
+}
+
+// Enter on a port: a two-step connection. The first Enter arms pendingCable and drops
+// back to RACK so the user can navigate to the other module's port; the second Enter
+// on a compatible port completes it. Mirrors the Win32 handlePortEnter — in particular
+// the cable is built the native way (set both PortWidgets + updateCable + addCable) so
+// onAdd() registers the plug widgets; hand-rolling the engine::Cable skips the plugs and
+// the cable later asserts when its module is removed.
+static void onPortEnter(AccessibleWindow* self, bool isOutput) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSTableView* t = isOutput ? in->outputTable : in->inputTable;
+	NSInteger row = [t selectedRow];
+	if (row < 0 || !in->currentModule || !APP || !APP->engine || !APP->scene || !APP->scene->rack)
+		return;
+
+	int portId   = (int) row;   // row index == port id
+	int portType = isOutput ? engine::Port::OUTPUT : engine::Port::INPUT;
+
+	if (!in->pendingCable.active) {
+		in->pendingCable.type   = portType;
+		in->pendingCable.module = in->currentModule;
+		in->pendingCable.portId = portId;
+		in->pendingCable.active = true;
+		engine::PortInfo* info = isOutput ? in->currentModule->getOutputInfo(portId)
+		                                  : in->currentModule->getInputInfo(portId);
+		std::string portName = info ? info->getName() : "";
+		std::string modName  = in->currentModule->model ? in->currentModule->model->name : "?";
+		setStatus(self, L("Connecting from \"", "Connessione da \"") + portName
+		          + L("\" on ", "\" di ") + modName
+		          + L(" started. Select destination port (Esc to cancel).",
+		              " avviata. Seleziona porta di destinazione (Esc per annullare)."));
+		switchTo(self, AX_RACK);
+		return;
+	}
+
+	// Complete: the two ports must be of opposite type.
+	if (in->pendingCable.type == portType) {
+		setStatus(self, L("Incompatible port: an output must connect to an input.",
+		                  "Porta incompatibile: un output deve collegarsi a un input."));
+		return;
+	}
+
+	engine::Module* outMod; int outId;
+	engine::Module* inMod;  int inId;
+	if (in->pendingCable.type == engine::Port::OUTPUT) {
+		outMod = in->pendingCable.module; outId = in->pendingCable.portId;
+		inMod  = in->currentModule;       inId  = portId;
+	}
+	else {
+		inMod  = in->pendingCable.module; inId  = in->pendingCable.portId;
+		outMod = in->currentModule;       outId = portId;
+	}
+	in->pendingCable.active = false;
+
+	std::string outName = outMod->model ? outMod->model->name : "?";
+	std::string inName  = inMod->model  ? inMod->model->name  : "?";
+	setStatus(self, L("Connected: ", "Connesso: ") + outName + " → " + inName + ".");
+	switchTo(self, AX_RACK);
+
+	// Defer the widget-tree mutation to the safe drain point.
+	pushCommand(self, [outMod, outId, inMod, inId]() {
+		app::RackWidget* rack = APP->scene->rack;
+		app::ModuleWidget* outMw = rack->getModule(outMod->id);
+		app::ModuleWidget* inMw  = rack->getModule(inMod->id);
+		if (!outMw || !inMw)
+			return;
+		app::PortWidget* outPort = outMw->getOutput(outId);
+		app::PortWidget* inPort  = inMw->getInput(inId);
+		if (!outPort || !inPort)
+			return;
+		app::CableWidget* cw = new app::CableWidget;
+		cw->color      = rack->getNextCableColor();
+		cw->outputPort = outPort;
+		cw->inputPort  = inPort;
+		cw->updateCable();   // creates the engine cable from the two ports
+		rack->addCable(cw);  // onAdd() registers the plug widgets
+	});
+}
+
+// Delete/Backspace on a port: remove every cable on it as one undoable action.
+static void onPortDelete(AccessibleWindow* self, bool isOutput) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSTableView* t = isOutput ? in->outputTable : in->inputTable;
+	NSInteger row = [t selectedRow];
+	if (row < 0 || !in->currentModule || !APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	int portId = (int) row;
+	engine::Module* mod = in->currentModule;
+
+	pushCommand(self, [self, mod, portId, isOutput]() {
+		app::RackWidget* rack = APP->scene->rack;
+		app::ModuleWidget* mw = rack->getModule(mod->id);
+		if (!mw)
+			return;
+		app::PortWidget* pw = isOutput ? mw->getOutput(portId) : mw->getInput(portId);
+		if (!pw)
+			return;
+
+		auto cables = rack->getCompleteCablesOnPort(pw);
+		if (cables.empty()) {
+			setStatus(self, L("No cable to disconnect on this port.",
+			                  "Nessun cavo da scollegare su questa porta."));
+		}
+		else {
+			history::ComplexAction* h = new history::ComplexAction;
+			h->name = L("disconnect cable", "scollega cavo");
+			for (app::CableWidget* cw : cables) {
+				history::CableRemove* hr = new history::CableRemove;
+				hr->setCable(cw);
+				h->push(hr);
+				rack->removeCable(cw);
+				delete cw;
+			}
+			APP->history->push(h);
+			setStatus(self, L("Cable disconnected.", "Cavo scollegato."));
+		}
+
+		refreshPortView(self, isOutput);
+		focusPortRow(self, isOutput, portId);
+	});
+}
+
 // ── Show / hide ──────────────────────────────────────────────────────────────
 static void setLayerVisible(AccessibleWindow* self, bool show) {
 	AccessibleWindow::Internal* in = self->internal;
@@ -873,9 +1087,14 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 - (NSInteger)numberOfRowsInTableView:(NSTableView*)tv {
 	if (!owner || !owner->internal)
 		return 0;
-	if (tv == owner->internal->paramTable)
-		return (NSInteger) owner->internal->paramRows.size();
-	return (NSInteger) owner->internal->rackRows.size();
+	rack::accessible::AccessibleWindow::Internal* in = owner->internal;
+	if (tv == in->paramTable)
+		return (NSInteger) in->paramRows.size();
+	if (tv == in->outputTable)
+		return in->currentModule ? in->currentModule->getNumOutputs() : 0;
+	if (tv == in->inputTable)
+		return in->currentModule ? in->currentModule->getNumInputs() : 0;
+	return (NSInteger) in->rackRows.size();
 }
 - (id)tableView:(NSTableView*)tv objectValueForTableColumn:(NSTableColumn*)col row:(NSInteger)row {
 	if (!owner || !owner->internal)
@@ -893,6 +1112,27 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		if ([[col identifier] isEqualToString:@"pvalue"])
 			return [NSString stringWithUTF8String:(pq->getDisplayValueString() + pq->getUnit()).c_str()];
 		return [NSString stringWithUTF8String:pq->name.c_str()];
+	}
+
+	// OUTPUT / INPUT tables: two columns (port name, cable status), read live.
+	if (tv == in->outputTable || tv == in->inputTable) {
+		bool isOutput = (tv == in->outputTable);
+		if (!in->currentModule)
+			return @"";
+		int numPorts = isOutput ? in->currentModule->getNumOutputs()
+		                        : in->currentModule->getNumInputs();
+		if (row < 0 || row >= numPorts)
+			return @"";
+		int portId = (int) row;
+		if ([[col identifier] isEqualToString:@"portstatus"]) {
+			std::string st = rack::accessible::portStatusString(in->currentModule, isOutput, portId);
+			return [NSString stringWithUTF8String:st.c_str()];
+		}
+		engine::PortInfo* info = isOutput ? in->currentModule->getOutputInfo(portId)
+		                                  : in->currentModule->getInputInfo(portId);
+		std::string name = info ? info->getName()
+		                        : (rack::accessible::L("Port ", "Porta ") + std::to_string(portId));
+		return [NSString stringWithUTF8String:name.c_str()];
 	}
 
 	auto& rows = in->rackRows;
@@ -960,6 +1200,10 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		switchTo(owner, AX_LIBRARY);
 		return;
 	}
+	if (kc == 53) {                      // Escape → cancel a pending connection
+		cancelPendingCable(owner);
+		return;
+	}
 	if (kc == 36 || kc == 76) {          // Return / keypad Enter
 		onRackEnter(owner);
 		return;
@@ -1017,7 +1261,12 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	if (kc == 36 || kc == 76) { onParamKey(owner, 'V', false, false); return; } // Return → value
 	if (kc == 51)             { onParamKey(owner, 'B', false, false); return; } // Backspace → reset
 	if (kc == 49)             { onParamKey(owner, 'S', false, false); return; } // Space → toggle/pulse
-	if (kc == 53) { switchTo(owner, AX_RACK); return; }                         // Escape → RACK
+	if (kc == 53) {                                                             // Escape → RACK
+		if (cancelPendingCable(owner))
+			return;
+		switchTo(owner, AX_RACK);
+		return;
+	}
 
 	if (kc == 48) {                                // Tab / Shift+Tab → cycle detail views
 		AXView cycle[3] = {AX_PARAM, AX_OUTPUT, AX_INPUT};
@@ -1040,6 +1289,60 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		announce(owner, L("Display cells: not yet implemented", "Celle display: non ancora implementato"));
 		return;
 	}
+	[super keyDown:e];
+}
+@end
+
+// NSTableView for the OUTPUT / INPUT port lists (2 columns: name, cable status). One
+// instance per direction; isOutput tells the handlers which side this is. Up/Down
+// navigate natively; Enter connects (two-step), Delete/Backspace disconnect, Escape
+// cancels a pending connection then returns to RACK.
+@interface RackAXPortTableView : NSTableView {
+@public
+	rack::accessible::AccessibleWindow* owner;
+	BOOL isOutput;
+}
+@end
+
+@implementation RackAXPortTableView
+- (void)keyDown:(NSEvent*)e {
+	using namespace rack::accessible;
+	if (!owner || !owner->internal) {
+		[super keyDown:e];
+		return;
+	}
+	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+	if (m & NSEventModifierFlagCommand) {   // Cmd-combos belong to the menu bar
+		[super keyDown:e];
+		return;
+	}
+	unsigned short kc = e.keyCode;
+	NSString* ch = [[e charactersIgnoringModifiers] lowercaseString];
+	bool shift = (m & NSEventModifierFlagShift) != 0;
+
+	if (kc == 36 || kc == 76) { onPortEnter(owner, isOutput); return; }   // Return → connect
+	if (kc == 51 || kc == 117) { onPortDelete(owner, isOutput); return; } // Backspace/Del → disconnect
+	if (kc == 53) {                                                       // Escape
+		if (cancelPendingCable(owner))
+			return;
+		switchTo(owner, AX_RACK);
+		return;
+	}
+	if (kc == 48) {                                // Tab / Shift+Tab → cycle detail views
+		AXView cycle[3] = {AX_PARAM, AX_OUTPUT, AX_INPUT};
+		for (int i = 0; i < 3; i++) {
+			if (owner->internal->currentView == cycle[i]) {
+				if (!owner->internal->currentModule)
+					return;
+				int nx = shift ? (i + 2) % 3 : (i + 1) % 3;
+				switchTo(owner, cycle[nx]);
+				return;
+			}
+		}
+		return;
+	}
+	if (shift && [ch isEqualToString:@"r"]) { switchTo(owner, AX_RACK); return; }
+	if (shift && [ch isEqualToString:@"l"]) { switchTo(owner, AX_LIBRARY); return; }
 	[super keyDown:e];
 }
 @end
@@ -1074,6 +1377,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		return;
 	}
 	if (kc == 53) {                         // Escape → back to RACK
+		if (cancelPendingCable(owner))
+			return;
 		switchTo(owner, AX_RACK);
 		return;
 	}
@@ -1119,6 +1424,7 @@ namespace accessible {
 static void reloadRackAfterMutation(AccessibleWindow* self) {
 	self->internal->currentModule = nullptr;
 	self->internal->lastParamModule = nullptr;
+	self->internal->pendingCable.active = false;
 	self->internal->rackDirty = true;
 	if (self->internal->visible)
 		switchTo(self, AX_RACK);
@@ -1224,6 +1530,46 @@ static void rebuildLibraryMenu(AccessibleWindow* self) {
 	std::thread([]() {
 		library::checkUpdates();
 	}).detach();
+}
+
+// ── Port table builder ───────────────────────────────────────────────────────
+// Build one OUTPUT/INPUT table (2 columns) inside a hidden scroll view, add it to the
+// panel content and return it. Shared by the two directions; isOutput picks the labels
+// and tags the view so the key handlers know which side they are on.
+static NSTableView* buildPortTable(AccessibleWindow* self, NSView* content,
+                                   id controller, bool isOutput, CGFloat w, CGFloat h) {
+	NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	[scroll setHasVerticalScroller:YES];
+	[scroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+	[scroll setHidden:YES];
+
+	RackAXPortTableView* t = [[RackAXPortTableView alloc] initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	t->owner = self;
+	t->isOutput = isOutput ? YES : NO;
+	CGFloat cw = w > 80 ? (w - 40) / 2 : 400;
+	NSTableColumn* cName = [[NSTableColumn alloc] initWithIdentifier:@"portname"];
+	[cName setTitle:nsstr(isOutput ? L("Output", "Uscita") : L("Input", "Ingresso"))];
+	[cName setWidth:cw];
+	[cName setEditable:NO];
+	[t addTableColumn:cName];
+	[cName release];
+	NSTableColumn* cStat = [[NSTableColumn alloc] initWithIdentifier:@"portstatus"];
+	[cStat setTitle:nsstr(L("Cable", "Cavo"))];
+	[cStat setWidth:cw];
+	[cStat setEditable:NO];
+	[t addTableColumn:cStat];
+	[cStat release];
+	[t setHeaderView:nil];
+	[t setAllowsMultipleSelection:NO];
+	[t setAllowsEmptySelection:YES];
+	[t setColumnAutoresizingStyle:NSTableViewUniformColumnAutoresizingStyle];
+	[t setDataSource:controller];
+	[t setDelegate:controller];
+	[scroll setDocumentView:t];
+	[t release];
+	[content addSubview:scroll];
+	[scroll release];
+	return t;
 }
 
 // ── Menu bar ─────────────────────────────────────────────────────────────────
@@ -1624,6 +1970,10 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	[content addSubview:paramScroll];
 	[paramScroll release];
 	self->internal->paramTable = paramTable;
+
+	// OUTPUT / INPUT port tables, same geometry, hidden until switched to.
+	self->internal->outputTable = buildPortTable(self, content, controller, true, w, h);
+	self->internal->inputTable  = buildPortTable(self, content, controller, false, w, h);
 
 	instance = self;
 
