@@ -442,6 +442,20 @@ static void refreshRackView(AccessibleWindow* self,
 		[in->rackTable selectRowIndexes:[NSIndexSet indexSetWithIndex:restoreTo]
 		           byExtendingSelection:NO];
 		[in->rackTable scrollRowToVisible:restoreTo];
+		// A delete is gated by an NSAlert (confirm()); when that app-modal alert closes,
+		// AppKit hands key-window status back to the main window (the GLFW rackWindow),
+		// not to our child panel. The panel then shows the selection but isn't key, so
+		// keystrokes hit the GLFW window and get rejected with the system beep — until
+		// the user leaves and re-enters the app. So re-assert the panel as key window
+		// first, then (since reloadData destroyed the row the VoiceOver cursor sat on,
+		// and selecting a row doesn't move the cursor) restore focus the same way
+		// switchTo does: first responder + the selection-changed notification.
+		if (in->currentView == AX_RACK) {
+			[in->panel makeKeyWindow];
+			[in->panel makeFirstResponder:in->rackTable];
+			NSAccessibilityPostNotification(in->rackTable,
+			    NSAccessibilitySelectedRowsChangedNotification);
+		}
 	}
 }
 
