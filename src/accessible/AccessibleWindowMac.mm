@@ -23,7 +23,10 @@
 #include <app/Switch.hpp>
 #include <app/PortWidget.hpp>
 #include <app/CableWidget.hpp>
+#include <app/LedDisplay.hpp>
 #include <app/TipWindow.hpp>
+#include <ui/MenuOverlay.hpp>
+#include <widget/event.hpp>
 #include <plugin/Model.hpp>
 #include <plugin/Plugin.hpp>
 #include <plugin.hpp>
@@ -126,6 +129,12 @@ struct AXContextItem {
 		: label(std::move(l)), action(std::move(a)), isSubmenu(sub) {}
 };
 
+// One clickable on-panel display cell (LedDisplayChoice) collected by the D key.
+struct AXDisplayCell {
+	app::LedDisplayChoice* choice;
+	std::string            label;
+};
+
 struct AccessibleWindow::Internal {
 	NSWindow*    rackWindow  = nil;   // main Rack window; regains key when toggled off
 	NSWindow*    panel       = nil;   // our accessible layer, a child window over Rack
@@ -190,6 +199,17 @@ struct AccessibleWindow::Internal {
 	std::vector<std::vector<AXContextItem>> menuStack;
 	ui::Menu*                               ownedRootMenu = nullptr;
 	std::vector<ui::Menu*>                  ownedSubmenus;
+
+	// Display-cell navigation (D key). displayCells are the focused module's clickable
+	// LedDisplayChoice cells; capturedOverlay is a Tier-A MenuOverlay pulled out of the
+	// scene into the accessible list (removed on cleanup); learningCell is an active
+	// Tier-B MIDI-learn target polled in drainCommands; lastDisplayCellRow restores focus
+	// when re-opening the cell list after picking a Tier-A option.
+	std::vector<AXDisplayCell> displayCells;
+	ui::MenuOverlay*           capturedOverlay   = nullptr;
+	app::LedDisplayChoice*     learningCell      = nullptr;
+	std::string                learningLastText;
+	int                        lastDisplayCellRow = 0;
 
 	// LIBRARY tree (brand → models). Built lazily on first show, like the Win32
 	// libraryLoaded flag; libraryRoots is an NSArray of AXLibNode* brands, retained.
@@ -1094,11 +1114,21 @@ static void cleanupContextMenu(AccessibleWindow* self) {
 	for (ui::Menu* sub : in->ownedSubmenus)
 		delete sub;
 	in->ownedSubmenus.clear();
+	if (in->capturedOverlay) {
+		if (APP && APP->scene)
+			APP->scene->removeChild(in->capturedOverlay);
+		delete in->capturedOverlay;
+		in->capturedOverlay = nullptr;
+	}
 	if (in->ownedRootMenu) {
 		delete in->ownedRootMenu;
 		in->ownedRootMenu = nullptr;
 	}
 	in->menuStack.clear();
+	in->displayCells.clear();
+	in->learningCell = nullptr;
+	in->learningLastText.clear();
+	in->lastDisplayCellRow = 0;
 }
 
 // Show a freshly built menu level as the CONTEXT_MENU view, remembering the view to
@@ -1292,6 +1322,10 @@ static void buildParamContextMenu(AccessibleWindow* self, int paramId) {
 	showContextMenu(self, std::move(items));
 }
 
+// Defined in the display-cell block below, but referenced from onContextEnter.
+static void collectDisplayCells(AccessibleWindow* self, app::ModuleWidget* mw);
+static void openDisplayCell(AccessibleWindow* self, app::LedDisplayChoice* choice);
+
 // Enter on a context row: a submenu pushes a new level; a leaf returns to the previous
 // view and fires its action. The item is copied first because a submenu push reassigns
 // contextItems mid-call.
@@ -1301,15 +1335,56 @@ static void onContextEnter(AccessibleWindow* self) {
 	if (row < 0 || row >= (NSInteger) in->contextItems.size())
 		return;
 	AXContextItem item = in->contextItems[row];
+
 	if (item.isSubmenu) {
 		if (item.action)
-			item.action();
+			item.action();   // pushes a new level
+		return;
 	}
-	else {
-		switchTo(self, in->previousView);
+
+	// Inside a Tier-A display submenu (level ≥1 of a display flow): run the option, then
+	// re-open the display-cell list so the user can change other display settings without
+	// pressing D again. The option's action calls cleanupContextMenu (clearing displayCells
+	// and menuStack), so we re-collect and rebuild afterwards.
+	bool inDisplayOptions = !in->displayCells.empty() && in->menuStack.size() >= 2;
+	if (inDisplayOptions) {
+		int returnRow = in->lastDisplayCellRow;
 		if (item.action)
 			item.action();
+		// currentModule and previousView survive cleanup.
+		if (in->currentModule && APP && APP->scene && APP->scene->rack) {
+			app::ModuleWidget* mw = APP->scene->rack->getModule(in->currentModule->id);
+			if (mw) {
+				collectDisplayCells(self, mw);
+				if (!in->displayCells.empty()) {
+					std::vector<AXContextItem> cells;
+					for (auto& dc : in->displayCells) {
+						app::LedDisplayChoice* ch = dc.choice;
+						cells.push_back({dc.label, [self, ch]() { openDisplayCell(self, ch); }, false});
+					}
+					in->menuStack.push_back(cells);
+					in->contextItems = cells;
+					[in->contextTable reloadData];
+					int clampRow = std::min(returnRow, (int) cells.size() - 1);
+					if (clampRow < 0)
+						clampRow = 0;
+					[in->contextTable selectRowIndexes:[NSIndexSet indexSetWithIndex:clampRow]
+					                byExtendingSelection:NO];
+					[in->contextTable scrollRowToVisible:clampRow];
+					NSAccessibilityPostNotification(in->contextTable,
+					    NSAccessibilitySelectedRowsChangedNotification);
+				}
+			}
+		}
+		return;
 	}
+
+	// Opening a display cell at level 0: remember the row so focus can return to it.
+	if (!in->displayCells.empty() && in->menuStack.size() == 1)
+		in->lastDisplayCellRow = (int) row;
+	switchTo(self, in->previousView);
+	if (item.action)
+		item.action();
 }
 
 // Escape in the context menu: pop one submenu level, or close the menu and return.
@@ -1366,6 +1441,137 @@ static void onModuleSpecificContextMenuKey(AccessibleWindow* self) {
 	if (!mw)
 		return;
 	buildModuleSpecificContextMenu(self, mw);
+}
+
+// ── Display cells (D key) — Tier A menus + Tier B MIDI learn ──────────────────
+// Walk a widget subtree collecting LedDisplayChoice cells; don't recurse into one (its
+// children are rendering details). step() refreshes the cell's text first.
+static void collectDisplayCellsRec(widget::Widget* w, std::vector<AXDisplayCell>& out) {
+	if (auto* dc = dynamic_cast<app::LedDisplayChoice*>(w)) {
+		dc->step();
+		out.push_back({dc, dc->text.empty() ? "(display)" : dc->text});
+		return;
+	}
+	for (widget::Widget* child : w->children)
+		collectDisplayCellsRec(child, out);
+}
+
+static void collectDisplayCells(AccessibleWindow* self, app::ModuleWidget* mw) {
+	self->internal->displayCells.clear();
+	if (!mw)
+		return;
+	for (widget::Widget* child : mw->children)
+		collectDisplayCellsRec(child, self->internal->displayCells);
+}
+
+// Fire a display cell's click, then fork: if a MenuOverlay appeared (Tier A), capture it
+// and show its items in the accessible CONTEXT_MENU; otherwise (Tier B) enter MIDI-learn
+// mode on the widget directly. Mirrors the Win32 openDisplayCell.
+static void openDisplayCell(AccessibleWindow* self, app::LedDisplayChoice* choice) {
+	if (!APP || !APP->scene || !choice)
+		return;
+
+	widget::Widget* lastBefore = APP->scene->children.empty() ? nullptr : APP->scene->children.back();
+	widget::Widget::ActionEvent eAction;
+	choice->onAction(eAction);
+	widget::Widget* lastAfter = APP->scene->children.empty() ? nullptr : APP->scene->children.back();
+
+	if (lastAfter && lastAfter != lastBefore) {
+		auto* overlay = dynamic_cast<ui::MenuOverlay*>(lastAfter);
+		if (overlay) {
+			self->internal->capturedOverlay = overlay;
+			ui::Menu* menu = nullptr;
+			for (widget::Widget* child : overlay->children) {
+				menu = dynamic_cast<ui::Menu*>(child);
+				if (menu)
+					break;
+			}
+			if (menu) {
+				auto items = buildItemsFromMenu(self, menu);
+				self->internal->menuStack.push_back(items);
+				self->internal->contextItems = items;
+				// previousView was set when the cell list opened (D key); keep it — just
+				// re-reveal CONTEXT_MENU with the new level.
+				switchTo(self, AX_CONTEXT_MENU);
+			}
+			else {
+				APP->scene->removeChild(overlay);
+				delete overlay;
+				self->internal->capturedOverlay = nullptr;
+				setStatus(self, L("Error: unrecognized menu structure.",
+				                  "Errore: struttura del menu non riconosciuta."));
+			}
+			return;
+		}
+	}
+
+	// Tier B: no overlay appeared — enter MIDI-learn mode on the widget.
+	if (!APP->event)
+		return;
+	APP->event->setSelectedWidget(choice);
+	self->internal->learningCell = choice;
+	self->internal->learningLastText = choice->text;
+	setStatus(self, L("Learning — press the MIDI control. Space = toggle. Esc = cancel.",
+	                  "In apprendimento — premi il controllo MIDI. Spazio = toggle. Esc = annulla."));
+}
+
+// D key: open the focused module's clickable-display list as a context menu. Works from
+// RACK (acts on the focused module, like P/O/I) and from PARAM (uses currentModule).
+static void onDisplayKey(AccessibleWindow* self) {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+	AccessibleWindow::Internal* in = self->internal;
+
+	if (in->currentView == AX_RACK) {
+		AXRow* r = focusedRackRow(self);
+		if (!r || r->freeSlot)
+			return;
+		in->currentModule = r->mw->module;
+	}
+	if (!in->currentModule)
+		return;
+	app::ModuleWidget* mw = APP->scene->rack->getModule(in->currentModule->id);
+	if (!mw)
+		return;
+
+	cleanupContextMenu(self);
+	collectDisplayCells(self, mw);
+	if (in->displayCells.empty()) {
+		setStatus(self, L("No clickable displays for this module.",
+		                  "Nessun display cliccabile per questo modulo."));
+		return;
+	}
+
+	std::vector<AXContextItem> items;
+	for (auto& cell : in->displayCells) {
+		app::LedDisplayChoice* choice = cell.choice;
+		items.push_back({cell.label, [self, choice]() { openDisplayCell(self, choice); }, false});
+	}
+	in->menuStack.push_back(items);   // level 0 = display-cell list
+	showContextMenu(self, items);     // sets previousView = RACK / PARAM
+}
+
+// Cancel an active Tier-B learn mode (Esc from any view); returns true if it did.
+static bool cancelLearnMode(AccessibleWindow* self) {
+	if (!self->internal->learningCell)
+		return false;
+	if (APP && APP->event)
+		APP->event->setSelectedWidget(nullptr);
+	self->internal->learningCell = nullptr;
+	self->internal->learningLastText.clear();
+	setStatus(self, L("Learn mode cancelled.", "Apprendimento annullato."));
+	return true;
+}
+
+// Toggle the learn target's selection (Space in learn mode); returns true if handled.
+static bool toggleLearnSelect(AccessibleWindow* self) {
+	if (!self->internal->learningCell || !APP || !APP->event)
+		return false;
+	if (APP->event->getSelectedWidget() == self->internal->learningCell)
+		APP->event->setSelectedWidget(nullptr);
+	else
+		APP->event->setSelectedWidget(self->internal->learningCell);
+	return true;
 }
 
 // ── Show / hide ──────────────────────────────────────────────────────────────
@@ -1538,7 +1744,9 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		switchTo(owner, AX_LIBRARY);
 		return;
 	}
-	if (kc == 53) {                      // Escape → cancel a pending connection
+	if (kc == 53) {                      // Escape → cancel learn mode / pending connection
+		if (cancelLearnMode(owner))
+			return;
 		cancelPendingCable(owner);
 		return;
 	}
@@ -1550,17 +1758,16 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		onRackDelete(owner);
 		return;
 	}
-	if (kc == 49) {                      // Space
+	if (kc == 49) {                      // Space → learn toggle, else selection toggle
+		if (toggleLearnSelect(owner))
+			return;
 		onRackToggleSelect(owner);
 		return;
 	}
 	if ([ch isEqualToString:@"p"]) { onRackPOI(owner, 'P'); return; }
 	if ([ch isEqualToString:@"o"]) { onRackPOI(owner, 'O'); return; }
 	if ([ch isEqualToString:@"i"]) { onRackPOI(owner, 'I'); return; }
-	if ([ch isEqualToString:@"d"]) {
-		announce(owner, L("Display cells: not yet implemented", "Celle display: non ancora implementato"));
-		return;
-	}
+	if ([ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
 	[super keyDown:e];
 }
 @end
@@ -1605,8 +1812,15 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 
 	if (kc == 36 || kc == 76) { onParamKey(owner, 'V', false, false); return; } // Return → value
 	if (kc == 51)             { onParamKey(owner, 'B', false, false); return; } // Backspace → reset
-	if (kc == 49)             { onParamKey(owner, 'S', false, false); return; } // Space → toggle/pulse
+	if (kc == 49) {                                                            // Space
+		if (toggleLearnSelect(owner))
+			return;
+		onParamKey(owner, 'S', false, false);   // toggle switch / pulse momentary
+		return;
+	}
 	if (kc == 53) {                                                             // Escape → RACK
+		if (cancelLearnMode(owner))
+			return;
 		if (cancelPendingCable(owner))
 			return;
 		switchTo(owner, AX_RACK);
@@ -1630,10 +1844,7 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	if (shift && [ch isEqualToString:@"r"]) { switchTo(owner, AX_RACK); return; }
 	if (shift && [ch isEqualToString:@"l"]) { switchTo(owner, AX_LIBRARY); return; }
 	if ([ch isEqualToString:@"v"]) { onParamKey(owner, 'V', false, false); return; }
-	if ([ch isEqualToString:@"d"]) {
-		announce(owner, L("Display cells: not yet implemented", "Celle display: non ancora implementato"));
-		return;
-	}
+	if ([ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
 	[super keyDown:e];
 }
 @end
@@ -2432,6 +2643,22 @@ void AccessibleWindow::drainCommands() {
 		}
 		internal->momentaryModule = nullptr;
 		internal->momentaryParamId = -1;
+	}
+
+	// Tier-B learn mode: poll the learning cell. If it was deselected externally, cancel;
+	// otherwise announce any change to its text (the learned MIDI assignment).
+	if (internal->learningCell && APP && APP->event) {
+		if (APP->event->getSelectedWidget() != internal->learningCell) {
+			internal->learningCell = nullptr;
+			internal->learningLastText.clear();
+		}
+		else {
+			std::string newText = internal->learningCell->text;
+			if (newText != internal->learningLastText) {
+				internal->learningLastText = newText;
+				setStatus(this, L("Value updated: ", "Valore aggiornato: ") + newText + ".");
+			}
+		}
 	}
 
 	std::vector<std::function<void()>> q;
