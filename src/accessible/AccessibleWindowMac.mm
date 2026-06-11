@@ -1065,9 +1065,25 @@ static void onParamKey(AccessibleWindow* self, char which, bool cmd, bool shift)
 		                         "»:\n(Es: 440, C4, log2(8), dbtogain(-6))");
 		std::string text = showInputDialog(L("Set value", "Imposta valore"), prompt,
 		                                   pq->getDisplayValueString());
-		if (text.empty())
-			return;
-		pq->setDisplayValueString(text);
+		if (!text.empty())
+			pq->setDisplayValueString(text);
+
+		// showInputDialog runs an app-modal NSAlert; when it closes, AppKit hands
+		// key-window status back to the GLFW rackWindow, not our child panel — the
+		// same issue fixed in rebuildRackView after the delete confirm(). Without
+		// this, the VoiceOver cursor stays in the main Rack window and subsequent
+		// keystrokes beep. Re-assert the panel as key window, restore first
+		// responder, refresh the value cell, and move the VoiceOver cursor back to
+		// the param row (covers both the value-set and cancel paths).
+		AccessibleWindow::Internal* in = self->internal;
+		[in->panel makeKeyWindow];
+		[in->panel makeFirstResponder:in->paramTable];
+		[in->paramTable reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+		                          columnIndexes:[NSIndexSet indexSetWithIndex:1]];
+		NSAccessibilityPostNotification(in->paramTable,
+		    NSAccessibilitySelectedRowsChangedNotification);
+		announce(self, pq->getDisplayValueString() + pq->getUnit());
+		return;
 	}
 	else if (which == 'S') {                  // Space → toggle switch / pulse momentary
 		if (!pq->snapEnabled)                 // only meaningful for switches
