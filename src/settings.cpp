@@ -67,6 +67,7 @@ bool autoCheckUpdates = true;
 bool verifyHttpsCerts = true;
 bool showTipsOnLaunch = true;
 int tipIndex = -1;
+bool accessibleLayerVisible = false;
 BrowserSort browserSort = BROWSER_SORT_UPDATED;
 float browserZoom = -1.f;
 json_t* pluginSettingsJ = NULL;
@@ -154,6 +155,8 @@ json_t* toJson() {
 	json_object_set_new(rootJ, "pixelRatio", json_real(pixelRatio));
 
 	json_object_set_new(rootJ, "uiTheme", json_string(uiTheme.c_str()));
+
+	json_object_set_new(rootJ, "accessibleLayerVisible", json_boolean(accessibleLayerVisible));
 
 	json_object_set_new(rootJ, "cableOpacity", json_real(cableOpacity));
 
@@ -345,6 +348,10 @@ void fromJson(json_t* rootJ) {
 	json_t* uiThemeJ = json_object_get(rootJ, "uiTheme");
 	if (uiThemeJ)
 		uiTheme = json_string_value(uiThemeJ);
+
+	json_t* accessibleLayerVisibleJ = json_object_get(rootJ, "accessibleLayerVisible");
+	if (accessibleLayerVisibleJ)
+		accessibleLayerVisible = json_boolean_value(accessibleLayerVisibleJ);
 
 	json_t* cableOpacityJ = json_object_get(rootJ, "cableOpacity");
 	if (cableOpacityJ)

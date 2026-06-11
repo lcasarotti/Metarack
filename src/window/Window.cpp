@@ -41,6 +41,10 @@
 	#include <accessible/AccessibleWindow.hpp>
 #endif
 
+#if defined ARCH_MAC
+	#include <accessible/AccessibleWindowMac.hpp>
+#endif
+
 
 namespace rack {
 namespace window {
@@ -462,6 +466,13 @@ void Window::step() {
 		accessible::AccessibleWindow::instance->drainCommands();
 #endif
 
+#if defined ARCH_MAC
+	// Same safe drain point as Windows: right after glfwPollEvents(), before the
+	// scene is stepped and drawn (see AccessibleWindowMac.mm).
+	if (accessible::AccessibleWindow::instance)
+		accessible::AccessibleWindow::instance->drainCommands();
+#endif
+
 	// Call cursorPosCallback every frame, not just when the mouse moves
 	{
 		double xpos, ypos;
@@ -569,6 +580,30 @@ void Window::step() {
 			}
 			contextSet(idleContext);
 			glfwMakeContextCurrent(win);
+#elif defined ARCH_MAC
+			// Same problem as Windows: while the accessible layer is shown, VoiceOver
+			// reads its AppKit controls via synchronous queries serviced only when the
+			// Cocoa run loop runs. A plain sleep here starves them until the next
+			// glfwPollEvents(), causing high speech latency. Pump events for the rest
+			// of the frame budget instead. Only while the layer is visible — otherwise
+			// the rack window must keep animating, so fall back to a plain sleep.
+			// GLFW callbacks may switch the Rack context, so save/restore it.
+			if (accessible::AccessibleWindow::instance
+			    && accessible::AccessibleWindow::instance->isVisible()) {
+				Context* idleContext = contextGet();
+				double deadline = system::getTime() + remaining;
+				for (;;) {
+					double left = deadline - system::getTime();
+					if (left <= 0.0)
+						break;
+					glfwWaitEventsTimeout(left);
+				}
+				contextSet(idleContext);
+				glfwMakeContextCurrent(win);
+			}
+			else {
+				system::sleep(remaining);
+			}
 #else
 			system::sleep(remaining);
 #endif

@@ -92,6 +92,7 @@ extern bool cableAutoRotate;
 extern bool autoCheckUpdates;
 extern bool verifyHttpsCerts;
 extern bool showTipsOnLaunch;
+extern bool accessibleLayerVisible;
 extern int tipIndex;
 enum BrowserSort {
 	BROWSER_SORT_UPDATED,

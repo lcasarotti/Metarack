@@ -1,7 +1,15 @@
 RACK_DIR ?= .
 RACK_EDITION := Free
 RACK_VERSION_MAJOR := 2
-RACK_VERSION ?= $(patsubst v%,%,$(shell git describe --tags --match "v$(RACK_VERSION_MAJOR).*"))
+RACK_VERSION ?= $(patsubst v%,%,$(shell git describe --tags --match "v$(RACK_VERSION_MAJOR).*" 2>/dev/null))
+# This fork carries no v2.* git tags, so `git describe` returns nothing and RACK_VERSION
+# is empty. An empty APP_VERSION makes the built-in Core plugin fail to load with "No
+# plugin version" (Plugin::fromJson), which silently drops the entire VCV brand — and all
+# its modules — from the library. Fall back to a concrete version (matching the bundled
+# Fundamental) whenever no tag describes the current commit.
+ifeq ($(strip $(RACK_VERSION)),)
+RACK_VERSION := 2.6.4
+endif
 
 FLAGS += -Iinclude -Idep/include
 
@@ -114,15 +122,34 @@ dep:
 cleandep:
 	$(MAKE) -C dep clean
 
-run: $(STANDALONE_TARGET)
-	./$< -d
-
-runr: $(STANDALONE_TARGET)
-	./$<
-
-debug: $(STANDALONE_TARGET)
+# On macOS the executable records libRack.dylib with a bare relative install name,
+# which dyld does not resolve against the current directory. Point dyld at the repo
+# root so the dev build runs without bundling (make dist). No-op on Linux/Windows.
 ifdef ARCH_MAC
-	lldb -- ./$< -d
+	RUN_ENV := DYLD_LIBRARY_PATH="$(CURDIR)"
+endif
+
+# VCV-prebuilt plugins record their libRack.dylib dependency as the absolute path
+# /tmp/Rack2/libRack.dylib (the VCV build farm's build directory). DYLD_LIBRARY_PATH
+# overrides this in a plain shell, but not through make's SIP-protected shell, so under
+# `make run` the plugins fail to load (Library not loaded: /tmp/Rack2/libRack.dylib) and
+# the module browser comes up empty. Point that absolute path at our local libRack.dylib.
+# /tmp is volatile, so recreate the link on every run. No-op off macOS.
+mac-librack-link:
+ifdef ARCH_MAC
+	@mkdir -p /tmp/Rack2
+	@ln -sf "$(CURDIR)/libRack.dylib" /tmp/Rack2/libRack.dylib
+endif
+
+run: $(STANDALONE_TARGET) mac-librack-link
+	$(RUN_ENV) ./$< -d
+
+runr: $(STANDALONE_TARGET) mac-librack-link
+	$(RUN_ENV) ./$<
+
+debug: $(STANDALONE_TARGET) mac-librack-link
+ifdef ARCH_MAC
+	$(RUN_ENV) lldb -- ./$< -d
 endif
 ifdef ARCH_WIN
 	gdb --args ./$< -d
@@ -320,4 +347,4 @@ cleandist:
 
 
 .DEFAULT_GOAL := all
-.PHONY: all dep run debug clean plugins dist sdk package lipo notarize
+.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link
