@@ -1,6 +1,12 @@
-# Ignore all dotfiles except git dotfiles
+# Ignore all dotfiles except git dotfiles and Claude Code project config
 .*
 !.git*
+!.claude
+!.clang-tidy
+!.astylerc
+
+# Generated build artifacts
+compile_commands.json
 
 # Binaries and build targets
 *.a
@@ -27,3 +33,6 @@
 /settings.json
 /screenshots
 /selections
+
+# Personal Claude Code instructions (private)
+CLAUDE.local.md
