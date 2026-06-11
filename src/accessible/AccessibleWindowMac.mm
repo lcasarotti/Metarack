@@ -633,13 +633,14 @@ static void refreshPortView(AccessibleWindow* self, bool isOutput) {
 	[t reloadData];
 }
 
-static const char* axViewName(AXView v) {
+static std::string axViewName(AXView v) {
 	switch (v) {
-		case AX_LIBRARY: return "Library";
-		case AX_PARAM:   return "Parameters";
-		case AX_OUTPUT:  return "Outputs";
-		case AX_INPUT:   return "Inputs";
-		default:         return "View";
+		case AX_RACK:    return L("Rack", "Rack");
+		case AX_LIBRARY: return L("Library", "Libreria");
+		case AX_PARAM:   return L("Parameters", "Parametri");
+		case AX_OUTPUT:  return L("Outputs", "Uscite");
+		case AX_INPUT:   return L("Inputs", "Ingressi");
+		default:         return L("View", "Vista");
 	}
 }
 
@@ -703,8 +704,14 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 		if ([in->paramTable selectedRow] < 0 && !in->paramRows.empty())
 			[in->paramTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
 			           byExtendingSelection:NO];
+		// Announce the view name so Tab-cycling between PARAM/OUTPUT/INPUT keeps the user
+		// oriented. VoiceOver pronounces the selection-changed read before any announcement
+		// posted around it, so the row is read first and the view name follows. Trying to
+		// reorder them (deferring the read) makes the announcement get dropped during fast
+		// cycling, so we accept hearing it after the row read — at least it's guaranteed.
 		NSAccessibilityPostNotification(in->paramTable,
 		    NSAccessibilitySelectedRowsChangedNotification);
+		announce(self, axViewName(v));
 		return;
 	}
 	if (v == AX_OUTPUT || v == AX_INPUT) {
@@ -718,7 +725,13 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 		[in->panel makeFirstResponder:t];
 		if ([t selectedRow] < 0 && [t numberOfRows] > 0)
 			[t selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+		// Announce the view name so Tab-cycling between PARAM/OUTPUT/INPUT keeps the user
+		// oriented. VoiceOver pronounces the selection-changed read before any announcement
+		// posted around it, so the row is read first and the view name follows. Trying to
+		// reorder them (deferring the read) makes the announcement get dropped during fast
+		// cycling, so we accept hearing it after the row read — at least it's guaranteed.
 		NSAccessibilityPostNotification(t, NSAccessibilitySelectedRowsChangedNotification);
+		announce(self, axViewName(v));
 		return;
 	}
 	if (v == AX_CONTEXT_MENU) {
@@ -735,7 +748,7 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 		    NSAccessibilitySelectedRowsChangedNotification);
 		return;
 	}
-	announce(self, std::string(axViewName(v)) + L(": not yet implemented", ": non ancora implementato"));
+	announce(self, axViewName(v) + L(": not yet implemented", ": non ancora implementato"));
 }
 
 // ── Confirmation dialog (NSAlert) ────────────────────────────────────────────
