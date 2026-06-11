@@ -44,6 +44,7 @@
 #include <widget/event.hpp>
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 #include <thread>
@@ -2020,30 +2021,44 @@ void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule, int focus
 void AccessibleWindow::refreshLibraryView() {
 	TreeView_DeleteAllItems(treeLibrary);
 
+	// Group models by brand name, merging plugins that share the same brand.
+	// std::map keeps brands in alphabetical order automatically.
+	std::map<std::wstring, std::vector<std::pair<std::wstring, plugin::Model*>>> byBrand;
 	for (plugin::Plugin* plug : plugin::plugins) {
 		if (!plug)
 			continue;
 		std::wstring brand = toWide(plug->getBrand());
-
-		TVINSERTSTRUCTW tvis     = {};
-		tvis.hParent             = TVI_ROOT;
-		tvis.hInsertAfter        = TVI_LAST;
-		tvis.item.mask           = TVIF_TEXT | TVIF_PARAM;
-		tvis.item.pszText        = const_cast<wchar_t*>(brand.data());
-		tvis.item.lParam         = 0;
-		HTREEITEM hPlug = TreeView_InsertItem(treeLibrary, &tvis);
-
 		for (plugin::Model* model : plug->models) {
 			if (!model || model->hidden)
 				continue;
-			std::wstring name = toWide(model->name);
+			byBrand[brand].push_back({toWide(model->name), model});
+		}
+	}
 
+	for (auto& kv : byBrand) {
+		// Sort models alphabetically within each brand.
+		std::sort(kv.second.begin(), kv.second.end(),
+		[](const auto & a, const auto & b) {
+			return a.first < b.first;
+		});
+
+		std::wstring brand = kv.first;
+		TVINSERTSTRUCTW tvis  = {};
+		tvis.hParent          = TVI_ROOT;
+		tvis.hInsertAfter     = TVI_LAST;
+		tvis.item.mask        = TVIF_TEXT | TVIF_PARAM;
+		tvis.item.pszText     = const_cast<wchar_t*>(brand.data());
+		tvis.item.lParam      = 0;
+		HTREEITEM hPlug = TreeView_InsertItem(treeLibrary, &tvis);
+
+		for (auto& mp : kv.second) {
+			std::wstring name = mp.first;
 			TVINSERTSTRUCTW mvis  = {};
 			mvis.hParent          = hPlug;
 			mvis.hInsertAfter     = TVI_LAST;
 			mvis.item.mask        = TVIF_TEXT | TVIF_PARAM;
 			mvis.item.pszText     = const_cast<wchar_t*>(name.data());
-			mvis.item.lParam      = (LPARAM)model;
+			mvis.item.lParam      = (LPARAM)mp.second;
 			TreeView_InsertItem(treeLibrary, &mvis);
 		}
 	}
