@@ -1708,6 +1708,7 @@ static bool toggleLearnSelect(AccessibleWindow* self) {
 // ── Show / hide ──────────────────────────────────────────────────────────────
 static void setLayerVisible(AccessibleWindow* self, bool show) {
 	AccessibleWindow::Internal* in = self->internal;
+	settings::accessibleLayerVisible = show;
 	if (show) {
 		[in->panel setFrame:[in->rackWindow frame] display:YES];
 		[in->rackWindow addChildWindow:in->panel ordered:NSWindowAbove];
@@ -2746,6 +2747,9 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	menuTarget->owner = self;
 	self->internal->menuTarget = menuTarget;
 	buildMenuBar(self);
+
+	if (settings::accessibleLayerVisible)
+		setLayerVisible(self, true);
 
 	INFO("Accessible (macOS) window created");
 	return self;

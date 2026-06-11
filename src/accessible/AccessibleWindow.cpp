@@ -503,11 +503,12 @@ void AccessibleWindow::onCreate() {
 	// Ctrl+Shift+A: global hotkey to bring this window to front from anywhere
 	RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_SHIFT, 'A');
 
-	// Pre-populate the rack list so the layer is ready the first time it's shown,
-	// but stay hidden: accessibility defaults to OFF at startup and the user turns
-	// it on at will with Ctrl+Shift+A. The window was created without WS_VISIBLE.
+	// Pre-populate the rack list so the layer is ready the first time it's shown.
 	refreshRackView();
 	rackDirty = false;
+
+	if (settings::accessibleLayerVisible)
+		setLayerVisible(true);
 }
 
 // HWND of the control backing the active View — the one that should take focus.
@@ -521,6 +522,7 @@ HWND AccessibleWindow::activeControl() {
 // ── Layer show/hide ──────────────────────────────────────────────────────────
 
 void AccessibleWindow::setLayerVisible(bool show) {
+	settings::accessibleLayerVisible = show;
 	if (show) {
 		// Size the layer over the Rack window so it reads as a full-window overlay.
 		if (rackHwnd) {
