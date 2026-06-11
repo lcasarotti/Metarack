@@ -108,6 +108,10 @@ struct AXRow {
 	bool               freeSlot = false;
 	int                gridX    = 0;
 	int                gridY    = 0;
+	// Position in the 2D spatial grid that mirrors the physical rack. Left/Right move
+	// within a visual row (col), Up/Down between rows (visRow) — see navigateRack.
+	int                visRow   = 0;
+	int                col      = 0;
 };
 
 // One menu-bar command: the action to run and an optional checkmark-state getter.
@@ -158,6 +162,13 @@ struct AccessibleWindow::Internal {
 	bool            rackDirty     = true;      // rebuild the RACK list on next show
 
 	std::vector<AXRow> rackRows;
+
+	// 2D-navigation index over rackRows, rebuilt by refreshRackView. rackRows is laid out
+	// by visual row (visRow) then column (col), each row contiguous, so rackRowStart[vr]
+	// is the flat index of that row's first cell and rackRowLen[vr] its cell count. Lets
+	// navigateRack jump Up/Down/Left/Right without rescanning the list.
+	std::vector<int> rackRowStart;
+	std::vector<int> rackRowLen;
 
 	// PARAM view. paramRows maps each table row to a param id (params with an empty
 	// name are skipped). lastParamModule guards the rebuild: the list is only
@@ -381,6 +392,8 @@ static void refreshRackView(AccessibleWindow* self,
 		r.freeSlot = true;
 		r.gridX = rowMaxRight;
 		r.gridY = curGy;
+		r.visRow = visRow;
+		r.col = col;
 		r.label = L("[ Free slot ]", "[ Slot libero ]") + coordSuffix(visRow + 1, col + 1);
 		in->rackRows.push_back(r);
 	};
@@ -401,6 +414,8 @@ static void refreshRackView(AccessibleWindow* self,
 
 		AXRow r;
 		r.mw = mw;
+		r.visRow = visRow;
+		r.col = col;
 		r.label = mw->model->name + coordSuffix(visRow + 1, col + 1);
 		if (APP->scene->rack->isSelected(mw))
 			r.label += L(" — selected", " — selezionato");
@@ -419,6 +434,20 @@ static void refreshRackView(AccessibleWindow* self,
 		r.freeSlot = true;
 		r.label = L("[ Free slot ]", "[ Slot libero ]") + coordSuffix(1, 1);
 		in->rackRows.push_back(r);
+	}
+
+	// Build the 2D-navigation index. rackRows is already ordered by visRow then col and
+	// each visual row is contiguous, so the first row carrying a given visRow marks its
+	// start and every row of that visRow adds to its length.
+	in->rackRowStart.clear();
+	in->rackRowLen.clear();
+	for (int i = 0; i < (int) in->rackRows.size(); i++) {
+		int vr = in->rackRows[i].visRow;
+		if ((int) in->rackRowStart.size() <= vr) {
+			in->rackRowStart.resize(vr + 1, i);
+			in->rackRowLen.resize(vr + 1, 0);
+		}
+		in->rackRowLen[vr]++;
 	}
 
 	[in->rackTable reloadData];
@@ -740,6 +769,94 @@ static AXRow* focusedRackRow(AccessibleWindow* self) {
 	if (row < 0 || row >= (NSInteger) self->internal->rackRows.size())
 		return nullptr;
 	return &self->internal->rackRows[row];
+}
+
+// 2D arrow navigation over the flat rack table, mirroring the Win32 icon view: Left/Right
+// (dx ±1) move within a visual row, Up/Down (dy ±1) between rows. NSTableView is a 1D list,
+// so we map the move through the rackRowStart/rackRowLen index and reselect the target row,
+// then re-post the selection so VoiceOver reads it. Up/Down clamp the column to the target
+// row's width (rows can differ in length); Left/Right stay put at a row edge.
+static void navigateRack(AccessibleWindow* self, int dx, int dy) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSInteger sel = [in->rackTable selectedRow];
+	if (sel < 0 || sel >= (NSInteger) in->rackRows.size())
+		return;
+	int nRows = (int) in->rackRowStart.size();
+	if (nRows == 0)
+		return;
+
+	int tr = in->rackRows[sel].visRow + dy;
+	int tc = in->rackRows[sel].col + dx;
+	if (tr < 0 || tr >= nRows)
+		return;                       // no row above/below: stay where we are
+	int len = in->rackRowLen[tr];
+	if (dy != 0) {                    // Up/Down: keep the column but clamp to the row's width
+		if (tc > len - 1)
+			tc = len - 1;
+		if (tc < 0)
+			tc = 0;
+	}
+	else if (tc < 0 || tc >= len) {   // Left/Right: don't wrap past the row's edges
+		return;
+	}
+
+	int target = in->rackRowStart[tr] + tc;
+	[in->rackTable selectRowIndexes:[NSIndexSet indexSetWithIndex:target] byExtendingSelection:NO];
+	[in->rackTable scrollRowToVisible:target];
+	NSAccessibilityPostNotification(in->rackTable, NSAccessibilitySelectedRowsChangedNotification);
+}
+
+// Ctrl+Enter: drop the focused module onto a brand-new row, one grid row below the lowest
+// existing module (left edge). Keyboard counterpart of dragging a module past the bottom
+// row in the GUI — this is how the user grows the patch into multiple rows. Undoable via
+// history::ModuleMove. Ported from the Win32 moveFocusedModuleToNewRow.
+static void moveFocusedModuleToNewRow(AccessibleWindow* self) {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+	AXRow* r = focusedRackRow(self);
+	if (!r)
+		return;
+	if (r->freeSlot) {
+		setStatus(self, L("Free slot: no module to move.", "Slot libero: nessun modulo da spostare."));
+		return;
+	}
+	app::ModuleWidget* mw = r->mw;
+
+	// Defer the widget-tree mutation to the safe drain point (see drainCommands).
+	pushCommand(self, [self, mw]() {
+		app::RackWidget* rack = APP->scene->rack;
+
+		// New row = one grid row below the lowest existing module.
+		bool any = false;
+		int  maxGy = 0;
+		for (app::ModuleWidget* m : rack->getModules()) {
+			int gy = (int) m->getGridPosition().y;
+			if (!any || gy > maxGy) {
+				maxGy = gy;
+				any = true;
+			}
+		}
+		if (!any)
+			return;
+		int newGy = maxGy + 1;
+
+		math::Vec oldPos = mw->box.pos;
+		math::Vec target = gridToPixel(0, newGy);
+		// The new row is empty, so requestModulePos succeeds; force-place as a guard.
+		if (!rack->requestModulePos(mw, target))
+			rack->setModulePosForce(mw, target);
+
+		// Make the move undoable, like a GUI drag.
+		history::ModuleMove* h = new history::ModuleMove;
+		h->moduleId = mw->module->id;
+		h->oldPos   = oldPos;
+		h->newPos   = mw->box.pos;
+		APP->history->push(h);
+
+		refreshRackView(self, mw);
+		self->internal->rackDirty = false;
+		setStatus(self, L("Module moved to a new row.", "Modulo spostato su una nuova fila."));
+	});
 }
 
 static void onRackEnter(AccessibleWindow* self) {
@@ -1738,6 +1855,12 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 	}
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 	if (m & NSEventModifierFlagCommand) {
+		// Cmd+Enter moves the focused module onto a new row (grows the patch vertically) —
+		// the Mac home for the Win32 Ctrl+Enter.
+		if (e.keyCode == 36 || e.keyCode == 76) {
+			moveFocusedModuleToNewRow(owner);
+			return;
+		}
 		// Cmd+M / Cmd+Shift+M open the context menus; other Cmd-combos go to the menu bar.
 		if ([[[e charactersIgnoringModifiers] lowercaseString] isEqualToString:@"m"]) {
 			if (m & NSEventModifierFlagShift)
@@ -1758,6 +1881,13 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		switchTo(owner, AX_LIBRARY);
 		return;
 	}
+	// Arrow keys drive the 2D spatial grid: Left/Right within a row, Up/Down between rows.
+	// NSTableView's native Up/Down (linear) would step through every cell in sequence, so
+	// we replace all four with navigateRack to mirror the Win32 icon-view navigation.
+	if (kc == 123) { navigateRack(owner, -1,  0); return; }   // Left
+	if (kc == 124) { navigateRack(owner, +1,  0); return; }   // Right
+	if (kc == 126) { navigateRack(owner,  0, -1); return; }   // Up
+	if (kc == 125) { navigateRack(owner,  0, +1); return; }   // Down
 	if (kc == 53) {                      // Escape → cancel learn mode / pending connection
 		if (cancelLearnMode(owner))
 			return;
