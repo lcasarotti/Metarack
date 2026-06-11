@@ -50,6 +50,7 @@
 #include <library.hpp>
 
 #include <algorithm>
+#include <map>
 #include <vector>
 #include <functional>
 #include <string>
@@ -495,17 +496,30 @@ static void refreshRackView(AccessibleWindow* self,
 static void refreshLibraryView(AccessibleWindow* self) {
 	AccessibleWindow::Internal* in = self->internal;
 
-	NSMutableArray* roots = [[NSMutableArray alloc] init];
+	// Group models by brand name, merging plugins that share the same brand.
+	// std::map keeps brands in alphabetical order automatically.
+	std::map<std::string, std::vector<plugin::Model*>> byBrand;
 	for (plugin::Plugin* plug : plugin::plugins) {
 		if (!plug)
 			continue;
-		AXLibNode* brand = [[AXLibNode alloc] init];
-		brand->label = [nsstr(plug->getBrand()) retain];
-		brand->model = nullptr;
-		brand->children = [[NSMutableArray alloc] init];
 		for (plugin::Model* model : plug->models) {
 			if (!model || model->hidden)
 				continue;
+			byBrand[plug->getBrand()].push_back(model);
+		}
+	}
+
+	NSMutableArray* roots = [[NSMutableArray alloc] init];
+	for (auto& kv : byBrand) {
+		// Sort models alphabetically within each brand.
+		std::sort(kv.second.begin(), kv.second.end(), [](plugin::Model* a, plugin::Model* b) {
+			return a->name < b->name;
+		});
+		AXLibNode* brand = [[AXLibNode alloc] init];
+		brand->label = [nsstr(kv.first) retain];
+		brand->model = nullptr;
+		brand->children = [[NSMutableArray alloc] init];
+		for (plugin::Model* model : kv.second) {
 			AXLibNode* node = [[AXLibNode alloc] init];
 			node->label = [nsstr(model->name) retain];
 			node->model = model;
