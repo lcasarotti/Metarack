@@ -122,12 +122,31 @@ openssl-3.3.2:
 	$(UNTAR) openssl-3.3.2.tar.gz
 	rm openssl-3.3.2.tar.gz
 
+# When cross-compiling for Windows, OpenSSL needs the explicit mingw64 platform.
+# - Configure: pass CC explicitly; CROSS_COMPILE must be empty to avoid double-prefix.
+# - Sub-make: pass CROSS_COMPILE with trailing dash (OpenSSL convention) so that
+#   $(CROSS_COMPILE)windres etc. resolve to the correct prefixed tools.
+ifdef ARCH_WIN
+OPENSSL_PLATFORM := mingw64
+# CROSS_COMPILE conflicts with OpenSSL's own use of that variable name.
+# We neutralise it (CROSS_COMPILE=) and supply every cross-tool explicitly
+# so OpenSSL's internal $(CROSS_COMPILE)tool expansions stay inert.
+OPENSSL_MAKE_FLAGS := CROSS_COMPILE= \
+  CC=$(CROSS_COMPILE)-gcc \
+  AR=$(CROSS_COMPILE)-ar \
+  RANLIB=$(CROSS_COMPILE)-ranlib \
+  RC=$(CROSS_COMPILE)-windres
+else
+OPENSSL_PLATFORM :=
+OPENSSL_MAKE_FLAGS :=
+endif
+
 $(openssl): | openssl-3.3.2
 	# Set no-pinshared so OpenSSL doesn't call GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_PIN, ...) on initialization on Windows. This prevents libRack from being unloaded on Windows with FreeLibrary().
 	# Don't use no-shared because libcurl's configure uses the shared library to find OpenSSL.
-	cd openssl-3.3.2 && ./Configure --prefix="$(DEP_PATH)" --libdir=lib no-zlib no-capieng no-pinshared no-apps no-tests no-docs no-ui-console
-	$(MAKE) -C openssl-3.3.2
-	$(MAKE) -C openssl-3.3.2 install_sw
+	cd openssl-3.3.2 && CROSS_COMPILE="" CC=$(CROSS_COMPILE)-gcc ./Configure $(OPENSSL_PLATFORM) --prefix="$(DEP_PATH)" --libdir=lib no-zlib no-capieng no-pinshared no-apps no-tests no-docs no-ui-console
+	$(MAKE) -C openssl-3.3.2 $(OPENSSL_MAKE_FLAGS)
+	$(MAKE) -C openssl-3.3.2 install_sw $(OPENSSL_MAKE_FLAGS)
 
 curl-8.10.0:
 	$(WGET) "https://github.com/curl/curl/releases/download/curl-8_10_0/curl-8.10.0.tar.gz" || $(WGET) "https://curl.se/download/curl-8.10.0.tar.gz"
@@ -216,6 +235,8 @@ RTAUDIO_FLAGS += -DRTAUDIO_API_CORE=ON -DRTAUDIO_API_PULSE=OFF -DRTAUDIO_API_JAC
 endif
 ifdef ARCH_WIN
 RTAUDIO_FLAGS += -DRTAUDIO_API_DS=ON -DRTAUDIO_API_WASAPI=ON
+# Explicitly disable Linux/Mac APIs so cmake doesn't auto-detect them from the host system
+RTAUDIO_FLAGS += -DRTAUDIO_API_ALSA=OFF -DRTAUDIO_API_JACK=OFF -DRTAUDIO_API_PULSE=OFF -DRTAUDIO_API_OSS=OFF
 # ASIO is proprietary software owned by Steinberg, so distributing it with your own VCV Rack build would violate Rack's GPLv3 license.
 # However, since VCV owns the copyright of all GPL'd code in the Rack package, we include ASIO in the Windows build for convenience to our users.
 ifdef RTAUDIO_ASIO

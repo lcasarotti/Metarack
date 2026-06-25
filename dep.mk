@@ -10,10 +10,7 @@ DEP_FLAGS += -g -O3
 # Static libs don't usually compiled with -fPIC, but since we're including them in a shared library, it's needed.
 DEP_FLAGS += -fPIC
 
-# Define compiler/linker target if cross-compiling
-ifdef CROSS_COMPILE
-	DEP_FLAGS += --target=$(MACHINE)
-endif
+# (No --target flag needed: GCC cross-compilers encode the target in the binary name)
 
 ifdef ARCH_X64
 	DEP_FLAGS += -march=nehalem
@@ -38,10 +35,18 @@ WGET := wget -c
 UNTAR := tar xf
 UNZIP := unzip -o
 CONFIGURE := ./configure --prefix="$(DEP_PATH)"
+ifdef CROSS_COMPILE
+	CONFIGURE += --host=$(CROSS_COMPILE)
+endif
 
 CMAKE := cmake
 ifdef ARCH_WIN
 	CMAKE += -DCMAKE_SYSTEM_NAME=Windows
+endif
+ifdef CROSS_COMPILE
+	CMAKE += -DCMAKE_C_COMPILER=$(CROSS_COMPILE)-gcc
+	CMAKE += -DCMAKE_CXX_COMPILER=$(CROSS_COMPILE)-g++
+	CMAKE += -DCMAKE_RC_COMPILER=$(CROSS_COMPILE)-windres
 endif
 # We must specify the MSYS generator if in an MSYS shell
 ifdef MSYSTEM
@@ -71,6 +76,13 @@ SHA256 := sha256check() { echo "$$2  $$1" | $(SHA256SUM) -c; }; sha256check
 $(DEPS): export CFLAGS = $(DEP_CFLAGS)
 $(DEPS): export CXXFLAGS = $(DEP_CXXFLAGS)
 $(DEPS): export LDFLAGS = $(DEP_LDFLAGS)
+ifdef CROSS_COMPILE
+$(DEPS): export CC     = $(CROSS_COMPILE)-gcc
+$(DEPS): export CXX    = $(CROSS_COMPILE)-g++
+$(DEPS): export AR     = $(CROSS_COMPILE)-ar
+$(DEPS): export RANLIB = $(CROSS_COMPILE)-ranlib
+$(DEPS): export STRIP  = $(CROSS_COMPILE)-strip
+endif
 
 dep: $(DEPS)
 

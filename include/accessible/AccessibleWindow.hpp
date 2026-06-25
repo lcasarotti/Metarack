@@ -149,10 +149,6 @@ private:
 	void onSize();
 	void onTimer();
 
-	// Show/hide the accessible layer over the Rack window. Toggled by Ctrl+Shift+A.
-	// show=true sizes the layer over Rack, brings it to front and focuses the active
-	// control; show=false hides it and returns keyboard focus to the Rack window.
-	void setLayerVisible(bool show);
 	// HWND of the control backing the currently active View (the one to focus).
 	HWND activeControl();
 

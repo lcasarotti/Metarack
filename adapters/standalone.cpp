@@ -62,11 +62,15 @@ static void fatalSignalHandler(int sig) {
 
 int main(int argc, char* argv[]) {
 #if defined ARCH_WIN
-	// Windows global mutex to prevent multiple instances
-	// Handle will be closed by Windows when the process ends
-	HANDLE instanceMutex = CreateMutexW(NULL, true, string::UTF8toUTF16(APP_NAME).c_str());
+	// Windows global mutex to prevent multiple instances.
+	// Handle will be closed by Windows when the process ends.
+	// Keep the mutex name "VCV Rack" (not APP_NAME): MetaRack shares the Rack2 user
+	// folder with any real VCV Rack install, so the two must stay mutually exclusive
+	// to avoid two processes corrupting the shared autosave/settings.
+	HANDLE instanceMutex = CreateMutexW(NULL, true, string::UTF8toUTF16("VCV Rack").c_str());
 	if (GetLastError() == ERROR_ALREADY_EXISTS) {
-		osdialog_message(OSDIALOG_ERROR, OSDIALOG_OK, "VCV Rack is already running. Multiple Rack instances are not supported.");
+		std::string msg = APP_NAME + " or VCV Rack is already running. Multiple instances sharing the Rack" + APP_VERSION_MAJOR + " folder are not supported.";
+		osdialog_message(OSDIALOG_ERROR, OSDIALOG_OK, msg.c_str());
 		exit(1);
 	}
 	(void) instanceMutex;
@@ -275,10 +279,13 @@ int main(int argc, char* argv[]) {
 	rack::accessible::AccessibleWindow* accessibleWindow = nullptr;
 	if (!settings::headless) {
 		INFO("Creating accessible window");
-		// Own the layer with the Rack window so it has no separate Alt+Tab/taskbar
-		// entry and hands focus back to Rack when toggled off.
 		HWND rackHwnd = glfwGetWin32Window(APP->window->win);
 		accessibleWindow = rack::accessible::AccessibleWindow::create(rackHwnd);
+		// MetaRack presents only the accessible window. Hide the Rack GLFW window:
+		// the engine and widget tree stay alive (the accessible window reads from
+		// them; only the OpenGL draw is skipped while hidden). Because the accessible
+		// window is now a top-level, un-owned window, hiding Rack doesn't hide it.
+		glfwHideWindow(APP->window->win);
 	}
 #endif
 
@@ -307,6 +314,30 @@ int main(int argc, char* argv[]) {
 #if defined ARCH_WIN
 		delete accessibleWindow;
 		accessibleWindow = nullptr;
+
+		// Clean exit for the standalone Windows build.
+		//
+		// Rack's orderly teardown (delete APP -> ~Engine) races with the active
+		// WASAPI audio thread at process exit: RtAudio's WASAPI closeStream can
+		// return before its callback thread has fully stopped, so that thread is
+		// still stepping the engine when ~Engine destroys the engine mutex, which
+		// segfaults in RtlDeleteCriticalSection. The crash happens *before*
+		// logger::destroy() writes the "END" token, so the next launch sees a
+		// truncated log and wrongly reports that Rack crashed.
+		//
+		// The process is exiting anyway, so instead of running the racy
+		// destructors we persist everything that matters (patch + settings),
+		// write the "END" token ourselves, then terminate immediately and let
+		// the OS reclaim threads, handles and memory. APP is a heap object freed
+		// only by the explicit `delete APP` below, so skipping it simply leaks it
+		// to the OS — no engine destructor runs, no race, no crash.
+		INFO("Saving state for clean exit");
+		if (!settings::headless) {
+			APP->patch->saveAutosave();
+			settings::save();
+		}
+		logger::destroy();   // writes the "END" token wasTruncated() looks for
+		TerminateProcess(GetCurrentProcess(), 0);
 #endif
 
 #if defined ARCH_MAC

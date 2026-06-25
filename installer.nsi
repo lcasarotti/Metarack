@@ -1,11 +1,11 @@
 !include "MUI2.nsh"
 
-!define NAME_FULL "VCV Rack Free ${RACK_VERSION} Accessible"
-!define NAME "VCV Rack ${RACK_VERSION_MAJOR} Free Accessible"
-!define RACK_DIR "Rack${RACK_VERSION_MAJOR}Accessible"
+!define NAME_FULL "MetaRack ${RACK_VERSION}"
+!define NAME "MetaRack ${RACK_VERSION_MAJOR}"
+!define RACK_DIR "MetaRack${RACK_VERSION_MAJOR}"
 !define DIST_DIR "Rack${RACK_VERSION_MAJOR}Free"
-!define INSTALL_REG "Software\VCV\Rack${RACK_VERSION_MAJOR}Accessible"
-!define UNINSTALL_REG "Software\Microsoft\Windows\CurrentVersion\Uninstall\VCVRack${RACK_VERSION_MAJOR}Accessible"
+!define INSTALL_REG "Software\MetaRack\MetaRack${RACK_VERSION_MAJOR}"
+!define UNINSTALL_REG "Software\Microsoft\Windows\CurrentVersion\Uninstall\MetaRack${RACK_VERSION_MAJOR}"
 
 Name "${NAME_FULL}"
 Unicode True
@@ -14,7 +14,7 @@ SetCompressorDictSize 8
 CRCCheck On
 
 ; Default installation folder
-InstallDir "$PROGRAMFILES\VCV\${RACK_DIR}"
+InstallDir "$PROGRAMFILES\MetaRack\${RACK_DIR}"
 ; Get installation folder from registry if available
 InstallDirRegKey HKLM "${INSTALL_REG}" ""
 
@@ -99,7 +99,7 @@ Section "${NAME}" INSTALL_SECTION
 	WriteRegStr HKLM "${UNINSTALL_REG}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
 	WriteRegStr HKLM "${UNINSTALL_REG}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
 	WriteRegStr HKLM "${UNINSTALL_REG}" "InstallLocation" '"$INSTDIR"'
-	WriteRegStr HKLM "${UNINSTALL_REG}" "Publisher" "VCV"
+	WriteRegStr HKLM "${UNINSTALL_REG}" "Publisher" "MetaRack"
 	SectionGetSize ${INSTALL_SECTION} $0
 	WriteRegDWORD HKLM "${UNINSTALL_REG}" "EstimatedSize" $0
 	WriteRegDWORD HKLM "${UNINSTALL_REG}" "NoModify" 1
@@ -129,7 +129,7 @@ Section "Uninstall"
 	Delete "$SMPROGRAMS\${NAME}.lnk"
 
 	DeleteRegKey HKLM "${INSTALL_REG}"
-	DeleteRegKey /ifempty HKLM "Software\VCV"
+	DeleteRegKey /ifempty HKLM "Software\MetaRack"
 	DeleteRegKey HKLM "${UNINSTALL_REG}"
 	DeleteRegKey HKLM "Software\Classes\.vcv"
 	DeleteRegKey HKLM "Software\Classes\VCVRack.Patch"

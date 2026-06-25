@@ -72,7 +72,7 @@ ifdef ARCH_WIN
 	LDFLAGS += -Wl,-Bstatic -Wl,--whole-archive
 	LDFLAGS += dep/lib/libglew32.a dep/lib/libglfw3.a dep/lib/libjansson.a dep/lib/libspeexdsp.a dep/lib/libsamplerate.a dep/lib/libarchive.a dep/lib/libzstd.a dep/lib/libcurl.a dep/lib/libssl.a dep/lib/libcrypto.a dep/lib/librtaudio.a dep/lib/librtmidi.a
 	LDFLAGS += -Wl,-Bdynamic -Wl,--no-whole-archive
-	LDFLAGS += -lpthread -lopengl32 -lgdi32 -lws2_32 -lcomdlg32 -lole32 -ldsound -lwinmm -lksuser -lshlwapi -lmfplat -lmfuuid -lwmcodecdspuuid -ldbghelp -lcrypt32 -lbcrypt
+	LDFLAGS += -lpthread -lopengl32 -lgdi32 -lws2_32 -lcomdlg32 -lole32 -ldsound -lwinmm -lksuser -lshlwapi -lmfplat -lmfuuid -lwmcodecdspuuid -ldbghelp -lcrypt32 -lbcrypt -lcomctl32
 endif
 
 # Some libraries aren't needed by plugins and might conflict with DAWs that load libRack, so make their symbols local to libRack instead of global (default).
@@ -111,6 +111,58 @@ STANDALONE_OBJECTS += $(TARGET)
 
 $(STANDALONE_TARGET): $(STANDALONE_SOURCES) $(STANDALONE_OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(STANDALONE_LDFLAGS)
+
+# Windowing-embed spike (Fase 0 feasibility test): Rack rendered as a child of a
+# host Win32 window, driven by Window::step() from an external loop.
+SPIKE_SOURCES += adapters/spike.cpp
+ifdef ARCH_WIN
+	SPIKE_TARGET := RackSpike.exe
+	# Note: intentionally NO -mwindows, so we keep a console for the INFO logs.
+	SPIKE_LDFLAGS += -Wl,--stack,0x100000
+endif
+SPIKE_OBJECTS += $(TARGET)
+
+$(SPIKE_TARGET): $(SPIKE_SOURCES) $(SPIKE_OBJECTS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(SPIKE_LDFLAGS)
+
+spike: $(SPIKE_TARGET)
+
+# CLAP plugin adapter (Fase 1): libRack linkato in una DSO .clap che il DAW carica.
+# Su Windows un .clap è semplicemente una DLL che esporta il simbolo `clap_entry`.
+CLAP_SOURCES += adapters/clap.cpp
+ifdef ARCH_WIN
+	CLAP_TARGET := Rack.clap
+	CLAP_LDFLAGS += -shared
+endif
+ifdef ARCH_LIN
+	CLAP_TARGET := Rack.clap
+	CLAP_LDFLAGS += -shared
+	CLAP_LDFLAGS += -static-libstdc++ -static-libgcc
+	CLAP_LDFLAGS += -Wl,-rpath=.
+endif
+ifdef ARCH_MAC
+	CLAP_TARGET := Rack.clap
+	CLAP_LDFLAGS += -shared
+	CLAP_LDFLAGS += -stdlib=libc++
+endif
+CLAP_OBJECTS += $(TARGET)
+
+$(CLAP_TARGET): $(CLAP_SOURCES) $(CLAP_OBJECTS)
+	$(CXX) $(CXXFLAGS) -Idep/clap/include -o $@ $^ $(CLAP_LDFLAGS)
+
+clap: $(CLAP_TARGET)
+
+# Dev harness: mini-host CLAP da console che carica Rack.clap e ne esegue il ciclo
+# di vita, per testare l'adapter senza un DAW. Console subsystem (niente -mwindows).
+CLAPTEST_SOURCES += adapters/claptest.cpp
+ifdef ARCH_WIN
+	CLAPTEST_TARGET := RackClapTest.exe
+endif
+
+$(CLAPTEST_TARGET): $(CLAPTEST_SOURCES) $(CLAP_TARGET)
+	$(CXX) $(CXXFLAGS) -Idep/clap/include -o $@ $(CLAPTEST_SOURCES)
+
+claptest: $(CLAPTEST_TARGET)
 
 # Convenience targets
 
@@ -174,12 +226,17 @@ valgrind: $(STANDALONE_TARGET)
 	valgrind $(VALGRIND_FLAGS) ./$< -d
 
 clean:
-	rm -rfv build dist $(TARGET) $(STANDALONE_TARGET) *.a
+	rm -rfv build dist $(TARGET) $(STANDALONE_TARGET) $(SPIKE_TARGET) $(CLAP_TARGET) $(CLAPTEST_TARGET) *.a
 
 # Windows resources
+WINDRES ?= windres
+ifdef CROSS_COMPILE
+	WINDRES = $(CROSS_COMPILE)-windres
+endif
+
 build/%.res: %.rc
 ifdef ARCH_WIN
-	windres $^ -O coff -o $@
+	$(WINDRES) $^ -O coff -o $@
 endif
 
 
@@ -347,4 +404,4 @@ cleandist:
 
 
 .DEFAULT_GOAL := all
-.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link
+.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link spike clap

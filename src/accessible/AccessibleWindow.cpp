@@ -265,16 +265,16 @@ AccessibleWindow* AccessibleWindow::create(HWND owner) {
 	self->rackHwnd = owner;
 	instance = self;
 
-	// Created hidden and as a tool window owned by the Rack window: it never gets
-	// its own Alt+Tab / taskbar entry and is shown as a layer over Rack on demand
-	// (Ctrl+Shift+A). onCreate() shows it initially via setLayerVisible(true).
+	// MetaRack's only window: a normal top-level window (own Alt+Tab / taskbar entry,
+	// no owner) shown unconditionally by onCreate(). The Rack GLFW window is hidden at
+	// startup (see standalone.cpp), so this is the sole UI the user ever sees.
 	HWND hwnd = CreateWindowExW(
-	              WS_EX_TOOLWINDOW,
+	              0,
 	              WND_CLASS,
-	              T(L"VCV Rack — Accessible Interface", L"VCV Rack — Interfaccia accessibile"),
+	              L"MetaRack",
 	              WS_OVERLAPPEDWINDOW,
 	              CW_USEDEFAULT, CW_USEDEFAULT, 580, 720,
-	              owner, nullptr, hInst, self);
+	              nullptr, nullptr, hInst, self);
 
 	if (!hwnd) {
 		instance = nullptr;
@@ -344,13 +344,6 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 			else if (self && wp == TIMER_MOMENTARY)
 				self->onMomentaryRelease();
 			return 0;
-		case WM_HOTKEY:
-			// Ctrl+Shift+A: toggle the accessible layer on/off from any context.
-			// The hotkey is global (RegisterHotKey), so it fires whether the layer
-			// is hidden (Rack focused) or shown.
-			if (self && wp == 1)
-				self->setLayerVisible(!IsWindowVisible(hwnd));
-			return 0;
 		case WM_COMMAND:
 			// Menu-bar selection. The lambda decides whether to run inline or defer
 			// itself via pushCommand() (tree/engine/window mutations must defer).
@@ -388,13 +381,12 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 			}
 			return 0;
 		case WM_CLOSE:
-			// Closing the layer (X / Alt+F4) just turns it off, handing focus back
-			// to Rack — it never tears down the window during the session.
-			if (self)
-				self->setLayerVisible(false);
+			// MetaRack's only window: closing it (X / Alt+F4) quits the app. This sets
+			// glfwSetWindowShouldClose on the hidden Rack window, so APP->window->run()
+			// returns and standalone.cpp deletes this window. Same path as File→Quit.
+			APP->window->close();
 			return 0;
 		case WM_DESTROY:
-			UnregisterHotKey(hwnd, 1);
 			KillTimer(hwnd, TIMER_ID);
 			return 0;
 		case WM_NOTIFY:
@@ -501,15 +493,14 @@ void AccessibleWindow::onCreate() {
 
 	SetTimer(hwnd, TIMER_ID, TIMER_MS, nullptr);
 
-	// Ctrl+Shift+A: global hotkey to bring this window to front from anywhere
-	RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_SHIFT, 'A');
-
-	// Pre-populate the rack list so the layer is ready the first time it's shown.
+	// Populate the rack list, then show the window: it's MetaRack's sole UI, so it
+	// comes up unconditionally and takes focus straight away.
 	refreshRackView();
 	rackDirty = false;
 
-	if (settings::accessibleLayerVisible)
-		setLayerVisible(true);
+	ShowWindow(hwnd, SW_SHOW);
+	SetForegroundWindow(hwnd);
+	SetFocus(activeControl());
 }
 
 // HWND of the control backing the active View — the one that should take focus.
@@ -518,30 +509,6 @@ HWND AccessibleWindow::activeControl() {
 	                 listOutput, listInput, listContextMenu
 	               };
 	return views[(int)currentView];
-}
-
-// ── Layer show/hide ──────────────────────────────────────────────────────────
-
-void AccessibleWindow::setLayerVisible(bool show) {
-	settings::accessibleLayerVisible = show;
-	if (show) {
-		// Size the layer over the Rack window so it reads as a full-window overlay.
-		if (rackHwnd) {
-			RECT rc;
-			GetWindowRect(rackHwnd, &rc);
-			SetWindowPos(hwnd, HWND_TOP, rc.left, rc.top,
-			             rc.right - rc.left, rc.bottom - rc.top, SWP_NOACTIVATE);
-		}
-		ShowWindow(hwnd, SW_SHOW);
-		SetForegroundWindow(hwnd);
-		SetFocus(activeControl());
-	}
-	else {
-		ShowWindow(hwnd, SW_HIDE);
-		// Hand keyboard focus back to Rack's GUI window.
-		if (rackHwnd)
-			SetForegroundWindow(rackHwnd);
-	}
 }
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -2038,7 +2005,8 @@ void AccessibleWindow::refreshLibraryView() {
 	for (auto& kv : byBrand) {
 		// Sort models alphabetically within each brand.
 		std::sort(kv.second.begin(), kv.second.end(),
-		[](const auto & a, const auto & b) {
+		          [](const std::pair<std::wstring, plugin::Model*>& a,
+		const std::pair<std::wstring, plugin::Model*>& b) {
 			return a.first < b.first;
 		});
 
