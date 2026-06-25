@@ -1,6 +1,9 @@
 !include "MUI2.nsh"
 
-!define NAME_FULL "MetaRack ${RACK_VERSION}"
+# MetaRack's own product version, independent of the underlying Rack base version
+# (RACK_VERSION, e.g. 2.6.6, which is documented in the release notes instead).
+!define METARACK_VERSION "1.0"
+!define NAME_FULL "MetaRack ${METARACK_VERSION}"
 !define NAME "MetaRack ${RACK_VERSION_MAJOR}"
 !define RACK_DIR "MetaRack${RACK_VERSION_MAJOR}"
 !define DIST_DIR "Rack${RACK_VERSION_MAJOR}Free"
@@ -95,7 +98,7 @@ Section "${NAME}" INSTALL_SECTION
 	; Write uninstaller info
 	WriteRegStr HKLM "${UNINSTALL_REG}" "DisplayName" "${NAME}"
 	WriteRegStr HKLM "${UNINSTALL_REG}" "DisplayIcon" '"$INSTDIR\Rack.exe"'
-	WriteRegStr HKLM "${UNINSTALL_REG}" "DisplayVersion" "${RACK_VERSION}"
+	WriteRegStr HKLM "${UNINSTALL_REG}" "DisplayVersion" "${METARACK_VERSION}"
 	WriteRegStr HKLM "${UNINSTALL_REG}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
 	WriteRegStr HKLM "${UNINSTALL_REG}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
 	WriteRegStr HKLM "${UNINSTALL_REG}" "InstallLocation" '"$INSTDIR"'
