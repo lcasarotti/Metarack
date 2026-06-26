@@ -35,6 +35,7 @@
 #include <asset.hpp>
 #include <string.hpp>
 #include <window/Window.hpp>
+#include <keyboard.hpp>
 #include <app/RackScrollWidget.hpp>
 #include <app/TipWindow.hpp>
 #include <ui/common.hpp>
@@ -2767,10 +2768,105 @@ void AccessibleWindow::handlePortDelete(bool isOutput) {
 
 // ── Subclass proc (keyboard hub) ─────────────────────────────────────────────
 
+int AccessibleWindow::midiKeyForVk(WPARAM vk) {
+	// VK -> GLFW key code, restricted to the keys the keyboard MIDI driver maps to
+	// a note/octave (see deviceInfos in src/keyboard.cpp). For letters/digits the
+	// Win32 VK code already equals the GLFW key code; OEM and numpad keys differ.
+	static const std::map<WPARAM, int> map = {
+		// QWERTY — octave controls
+		{ VK_OEM_3, GLFW_KEY_GRAVE_ACCENT },  // octave down
+		{ '1',      GLFW_KEY_1 },             // octave up
+		// QWERTY — lower row
+		{ 'Z', GLFW_KEY_Z }, { 'S', GLFW_KEY_S }, { 'X', GLFW_KEY_X },
+		{ 'D', GLFW_KEY_D }, { 'C', GLFW_KEY_C }, { 'V', GLFW_KEY_V },
+		{ 'G', GLFW_KEY_G }, { 'B', GLFW_KEY_B }, { 'H', GLFW_KEY_H },
+		{ 'N', GLFW_KEY_N }, { 'J', GLFW_KEY_J }, { 'M', GLFW_KEY_M },
+		{ VK_OEM_COMMA, GLFW_KEY_COMMA }, { 'L', GLFW_KEY_L },
+		{ VK_OEM_PERIOD, GLFW_KEY_PERIOD }, { VK_OEM_1, GLFW_KEY_SEMICOLON },
+		{ VK_OEM_2, GLFW_KEY_SLASH },
+		// QWERTY — upper row
+		{ 'Q', GLFW_KEY_Q }, { '2', GLFW_KEY_2 }, { 'W', GLFW_KEY_W },
+		{ '3', GLFW_KEY_3 }, { 'E', GLFW_KEY_E }, { 'R', GLFW_KEY_R },
+		{ '5', GLFW_KEY_5 }, { 'T', GLFW_KEY_T }, { '6', GLFW_KEY_6 },
+		{ 'Y', GLFW_KEY_Y }, { '7', GLFW_KEY_7 }, { 'U', GLFW_KEY_U },
+		{ 'I', GLFW_KEY_I }, { '9', GLFW_KEY_9 }, { 'O', GLFW_KEY_O },
+		{ '0', GLFW_KEY_0 }, { 'P', GLFW_KEY_P },
+		{ VK_OEM_4, GLFW_KEY_LEFT_BRACKET }, { VK_OEM_PLUS, GLFW_KEY_EQUAL },
+		{ VK_OEM_6, GLFW_KEY_RIGHT_BRACKET },
+		// Numpad layout
+		{ VK_DIVIDE, GLFW_KEY_KP_DIVIDE }, { VK_MULTIPLY, GLFW_KEY_KP_MULTIPLY },
+		{ VK_NUMPAD0, GLFW_KEY_KP_0 }, { VK_DECIMAL, GLFW_KEY_KP_DECIMAL },
+		{ VK_NUMPAD1, GLFW_KEY_KP_1 }, { VK_NUMPAD2, GLFW_KEY_KP_2 },
+		{ VK_NUMPAD3, GLFW_KEY_KP_3 }, { VK_NUMPAD4, GLFW_KEY_KP_4 },
+		{ VK_NUMPAD5, GLFW_KEY_KP_5 }, { VK_NUMPAD6, GLFW_KEY_KP_6 },
+		{ VK_ADD, GLFW_KEY_KP_ADD }, { VK_NUMPAD7, GLFW_KEY_KP_7 },
+		{ VK_NUMPAD8, GLFW_KEY_KP_8 }, { VK_NUMPAD9, GLFW_KEY_KP_9 },
+	};
+	auto it = map.find(vk);
+	return it != map.end() ? it->second : 0;
+}
+
+void AccessibleWindow::toggleMidiKeyboard() {
+	midiKeyboardMode = !midiKeyboardMode;
+	if (!midiKeyboardMode) {
+		// Release anything still held so notes don't stick after leaving the mode.
+		for (int g : heldMidiKeys)
+			keyboard::release(g);
+		heldMidiKeys.clear();
+		swallowNextChar = false;
+	}
+	setStatus(midiKeyboardMode
+	          ? Ts("MIDI keyboard on.", "Tastiera MIDI attivata.")
+	          : Ts("MIDI keyboard off.", "Tastiera MIDI disattivata."));
+}
+
 LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
   HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
   UINT_PTR /*uid*/, DWORD_PTR data) {
 	auto* self = reinterpret_cast<AccessibleWindow*>(data);
+
+	// Shift+K toggles the computer-keyboard MIDI mode (in either state).
+	if (msg == WM_KEYDOWN && wp == 'K'
+	    && (GetKeyState(VK_SHIFT) & 0x8000)
+	    && !(GetKeyState(VK_CONTROL) & 0x8000)) {
+		self->toggleMidiKeyboard();
+		return 0;
+	}
+
+	// While MIDI mode is on, route note/octave keys to Rack's keyboard MIDI driver.
+	// Non-note keys (and any key with a modifier) fall through to normal handling,
+	// so arrows/Tab/Esc/Enter and the Ctrl-/Shift- shortcuts still navigate.
+	if (self->midiKeyboardMode) {
+		bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+		bool alt   = (GetKeyState(VK_MENU) & 0x8000) != 0;
+
+		if (msg == WM_KEYDOWN) {
+			int g = midiKeyForVk(wp);
+			if (g && !ctrl && !shift && !alt) {
+				if (!(lp & (1 << 30))) {              // bit 30 set = auto-repeat
+					keyboard::press(g);
+					self->heldMidiKeys.push_back(g);
+				}
+				self->swallowNextChar = true;         // eat the trailing WM_CHAR
+				return 0;                             // consume: no nav, no typeahead
+			}
+		}
+		else if (msg == WM_KEYUP) {
+			int g = midiKeyForVk(wp);
+			auto& h = self->heldMidiKeys;
+			auto it = std::find(h.begin(), h.end(), g);
+			if (g && it != h.end()) {                 // release only notes we pressed
+				keyboard::release(g);
+				h.erase(it);
+				return 0;
+			}
+		}
+		else if ((msg == WM_CHAR || msg == WM_SYSCHAR) && self->swallowNextChar) {
+			self->swallowNextChar = false;            // suppress the note's typeahead
+			return 0;
+		}
+	}
 
 	// WM_CONTEXTMENU is sent by the system for both the Application key and
 	// Shift+F10 — the standard screen-reader shortcut for context menus.

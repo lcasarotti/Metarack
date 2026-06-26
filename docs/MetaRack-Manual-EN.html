@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MetaRack Manual</title>
+<style>
+  body { font-family: Georgia, "Times New Roman", serif; line-height: 1.6;
+         max-width: 60rem; margin: 0 auto; padding: 1.5rem; color: #1a1a1a; }
+  h1 { font-size: 2rem; border-bottom: 3px solid #444; padding-bottom: .3rem; }
+  h2 { font-size: 1.5rem; margin-top: 2.2rem; border-bottom: 1px solid #bbb; padding-bottom: .2rem; }
+  h3 { font-size: 1.2rem; margin-top: 1.6rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #999; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eee; }
+  kbd { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
+        border: 1px solid #aaa; border-radius: 3px; padding: 0 .35rem; white-space: nowrap; }
+  code { font-family: Consolas, "Courier New", monospace; background: #f4f4f4; padding: 0 .25rem; }
+  nav { background: #f7f7f7; border: 1px solid #ccc; padding: .8rem 1.2rem; border-radius: 6px; }
+  .lang-switch { font-size: .9rem; }
+  .note { background: #eef6ff; border-left: 4px solid #3b82f6; padding: .5rem 1rem; margin: 1rem 0; }
+</style>
+</head>
+<body>
+
+<p class="lang-switch"><a href="MetaRack-Manuale-IT.html" lang="it">Versione italiana</a></p>
+
+<h1>MetaRack Manual</h1>
+
+<p>MetaRack is a software modular synthesizer that is fully keyboard-accessible and
+screen-reader compatible (on Windows: NVDA, Jaws, Narrator). It is built on VCV Rack : every operation — adding modules, adjusting
+parameters, patching cables — is done without a mouse, with spoken feedback your
+screen reader can read.</p>
+
+<div class="note">
+<p>This manual covers MetaRack's accessible interface. For details about individual
+modules, numeric expressions, and general modular-synthesis concepts, the online
+VCV Rack manual still applies; you can open it at any time with <kbd>F1</kbd>.</p>
+</div>
+
+<nav aria-label="Table of contents">
+<h2>Table of contents</h2>
+<ul>
+  <li><a href="#intro">1. What MetaRack is</a></li>
+  <li><a href="#startup">2. Starting and quitting</a></li>
+  <li><a href="#views">3. The window's six views</a></li>
+  <li><a href="#rack">4. The Rack view: the module grid</a></li>
+  <li><a href="#library">5. Adding modules from the Library</a></li>
+  <li><a href="#params">6. Parameters, inputs and outputs</a></li>
+  <li><a href="#values">7. Adjusting parameters</a></li>
+  <li><a href="#cables">8. Patching cables</a></li>
+  <li><a href="#selection">9. Multiple module selection</a></li>
+  <li><a href="#context">10. Module context menus</a></li>
+  <li><a href="#displays">11. Clickable displays (D key)</a></li>
+  <li><a href="#midi-keyboard">12. Playing notes from the computer keyboard (Shift+K)</a></li>
+  <li><a href="#menubar">13. The menu bar</a></li>
+  <li><a href="#shortcuts">14. Keyboard shortcut reference</a></li>
+</ul>
+</nav>
+
+<h2 id="intro">1. What MetaRack is</h2>
+
+<p>VCV Rack is a modular synthesizer emulator: you build instruments by virtually
+connecting modules (oscillators, filters, sequencers, mixers…) with cables, exactly
+as in a physical Eurorack system. Its original interface is purely graphical and
+therefore inaccessible to a screen reader.</p>
+
+<p>MetaRack replaces that graphics with an interface made of native operating-system
+controls (lists, trees, a menu bar) that a screen reader can read and announce. The
+underlying audio engine is identical to VCV Rack: the same modules, the same sounds,
+the same patch files.</p>
+
+<p>MetaRack shares VCV Rack's user folder, installed plugins, and online-library
+access; your patches stay compatible in both directions.</p>
+
+<h2 id="startup">2. Starting and quitting</h2>
+
+<h3>Starting the program</h3>
+<p>Launch MetaRack like any application (from the Start menu or its icon). On open,
+the "MetaRack" accessible window immediately receives the foreground and focus, and
+your screen reader announces its title. There is no separate graphical window to
+hunt for: the accessible interface <strong>is</strong> the program.</p>
+
+<h3>Quitting the program</h3>
+<p>To quit, use <kbd>Ctrl</kbd>+<kbd>Q</kbd>, or <kbd>Alt</kbd>+<kbd>F4</kbd>, or the
+<em>File → Quit</em> menu item. Your current work is saved automatically (autosave),
+as in VCV Rack: reopening brings you back to where you left off.</p>
+
+<div class="note">
+<p>Only one instance can run at a time. If MetaRack is already open (or a "real"
+VCV Rack is, since they share the user folder), a second launch is refused to avoid
+corrupting the autosave.</p>
+</div>
+
+<h2 id="views">3. The window's six views</h2>
+
+<p>The window shows <strong>one view at a time</strong>. Each view is a list (or a
+tree) you navigate with the arrow keys; you switch between them with the keys
+described below. At the bottom of the window a <strong>status bar</strong> reports
+short contextual messages (operation results, hints).</p>
+
+<table>
+<thead><tr><th>View</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><strong>Rack</strong></td><td>All modules in the patch, laid out on a 2D grid that mirrors the physical rows of the rack.</td></tr>
+<tr><td><strong>Library</strong></td><td>Tree of installed plugins and their modules, where you add new modules from.</td></tr>
+<tr><td><strong>Parameters</strong></td><td>The selected module's parameters (knobs, switches, buttons), with name and value.</td></tr>
+<tr><td><strong>Outputs</strong></td><td>The selected module's output ports, with their connection state.</td></tr>
+<tr><td><strong>Inputs</strong></td><td>The selected module's input ports, with their connection state.</td></tr>
+<tr><td><strong>Context menu</strong></td><td>A temporary view listing the items of a menu (a module's, a parameter's, or a display's).</td></tr>
+</tbody>
+</table>
+
+<h3>Moving between views</h3>
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Go to the <strong>Rack</strong> view (if already there, force-refresh the list).</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Go to the <strong>Library</strong> view.</td></tr>
+<tr><td><kbd>P</kbd></td><td>From the Rack view: open the focused module's <strong>Parameters</strong>.</td></tr>
+<tr><td><kbd>O</kbd></td><td>From the Rack view: open the focused module's <strong>Outputs</strong>.</td></tr>
+<tr><td><kbd>I</kbd></td><td>From the Rack view: open the focused module's <strong>Inputs</strong>.</td></tr>
+<tr><td><kbd>Tab</kbd></td><td>Within a module, cycle forward: Parameters → Outputs → Inputs → Parameters.</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle backward: Parameters → Inputs → Outputs → Parameters.</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Cancel a pending cable; or, if nothing is pending, return to the Rack view.</td></tr>
+</tbody>
+</table>
+
+<h2 id="rack">4. The Rack view: the module grid</h2>
+
+<p>In a modular synthesizer's rack, modules sit side by side on one or more rows.
+MetaRack faithfully reproduces this layout as a <strong>two-dimensional grid</strong>:</p>
+
+<ul>
+  <li><kbd>←</kbd> and <kbd>→</kbd> move through modules <strong>within the same row</strong>.</li>
+  <li><kbd>↑</kbd> and <kbd>↓</kbd> jump <strong>between rows</strong> (when there is more than one).</li>
+  <li>You can also type a module's initial letter to jump to it (type-ahead search).</li>
+</ul>
+
+<p>For each item, the screen reader announces the module name followed by its
+position, in the form "<em>— row N, slot M</em>". The <strong>row</strong> is the
+line (starting at 1); the <strong>slot</strong> is the module's sequential position
+within that row (starting at 1). This numbering is meant for orientation; it does
+not correspond to physical HP units.</p>
+
+<h3>Free slots</h3>
+<p>Each row ends with a "<strong>[ Free slot ]</strong>" item: that is where you
+insert a new module. An empty rack contains a single free slot.</p>
+
+<h3>Adding, moving and deleting modules</h3>
+<table>
+<thead><tr><th>Key</th><th>Context</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>Enter</kbd></td><td>on a module</td><td>Opens the module's Parameters.</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>on a free slot</td><td>If you just chose a model in the Library, inserts it here; otherwise opens the Library to pick one.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>on a module</td><td>Moves the focused module to a <strong>new row</strong> (grows the patch downward).</td></tr>
+<tr><td><kbd>Del</kbd> or <kbd>Backspace</kbd></td><td>on a module</td><td>Deletes the module (with confirmation). If a multiple selection is active, deletes the whole selection.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>on a module</td><td>Copies the module's preset to the clipboard.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>on a module</td><td>Pastes the copied preset onto the focused module (overwrites its settings).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>on a free slot</td><td>Inserts a <strong>new</strong> module from the clipboard at the end of the row.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>on a module</td><td>Duplicates the module (without cables).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>on a module</td><td>Duplicates the module keeping its cables.</td></tr>
+</tbody>
+</table>
+
+<h2 id="library">5. Adding modules from the Library</h2>
+
+<p>Press <kbd>Shift</kbd>+<kbd>L</kbd> to open the <strong>Library</strong>: a tree
+whose first level is the plugins (the brands) and whose second level is the
+individual modules each one offers.</p>
+
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Move through the tree items.</td></tr>
+<tr><td><kbd>→</kbd> / <kbd>←</kbd> or <kbd>Enter</kbd> on a brand</td><td>Expand or collapse the node to see its modules.</td></tr>
+<tr><td><kbd>Enter</kbd> on a module</td><td>Picks that model and returns to the Rack view. Then go to a <strong>[ Free slot ]</strong> and press <kbd>Enter</kbd> to insert it.</td></tr>
+</tbody>
+</table>
+
+<p>Full procedure to add a module:</p>
+<ol>
+  <li><kbd>Shift</kbd>+<kbd>L</kbd> to open the Library.</li>
+  <li>Find the brand, expand it, scroll to the module you want.</li>
+  <li><kbd>Enter</kbd> on the module: you return to the Rack holding the model.</li>
+  <li>Move to a free slot and press <kbd>Enter</kbd>: the module is inserted and focus stays on it.</li>
+</ol>
+
+<h2 id="params">6. Parameters, inputs and outputs</h2>
+
+<p>Every module has three separate lists, reached from the Rack view with
+<kbd>P</kbd>, <kbd>O</kbd>, <kbd>I</kbd>, or cycled with <kbd>Tab</kbd> /
+<kbd>Shift</kbd>+<kbd>Tab</kbd>:</p>
+
+<ul>
+  <li><strong>Parameters</strong> — knobs, sliders, switches and buttons. Each row
+  shows the name and the current value.</li>
+  <li><strong>Outputs</strong> — the module's output ports, with their state: "free"
+  or the destination module they connect to.</li>
+  <li><strong>Inputs</strong> — the input ports, with the same kind of state.</li>
+</ul>
+
+<p>Scroll each list with <kbd>↑</kbd> and <kbd>↓</kbd>. The screen reader announces
+each row's name and value (or state).</p>
+
+<h2 id="values">7. Adjusting parameters</h2>
+
+<p>In the <strong>Parameters</strong> view, on the focused parameter's row:</p>
+
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Decrease / increase by a normal step (about 1% of the range).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>→</kbd></td><td>Fine step (one tenth of normal).</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>Shift</kbd>+<kbd>→</kbd></td><td>Coarse step (four times normal).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Ultra-fine step (one hundredth of normal).</td></tr>
+<tr><td><kbd>Backspace</kbd></td><td>Resets the parameter to its default value.</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Opens the "Set value" dialog to type an exact value.</td></tr>
+<tr><td><kbd>Space</kbd></td><td>For latching switches: cycle the values. For momentary buttons (e.g. a sequencer's Run): one press = one trigger.</td></tr>
+<tr><td><kbd>Application key</kbd> or <kbd>Shift</kbd>+<kbd>F10</kbd></td><td>Opens the parameter's context menu ("Set value…" and "Reset to default").</td></tr>
+</tbody>
+</table>
+
+<h3>The "Set value" dialog</h3>
+<p><kbd>Enter</kbd> opens a dialog with a text field pre-filled with the current value.
+You can type a number or an expression (the same ones VCV Rack supports: note names,
+<code>log2</code>, <code>dbtogain</code>, <code>vtof</code>, and so on). Confirm with
+<kbd>Enter</kbd> (OK) or cancel with <kbd>Esc</kbd>.</p>
+
+<div class="note">
+<p><strong>Latching switches vs. momentary buttons.</strong> In VCV Rack, buttons
+come in two kinds. <em>Latching switches</em> hold their value (on/off, or several
+positions) and <kbd>Space</kbd> cycles through them. <em>Momentary buttons</em>
+(like a sequencer's Run) instead react to the moment of the press: MetaRack handles
+them by simulating a press-and-release, so a single <kbd>Space</kbd> equals a single
+trigger. For these, the resting value is always zero, so the "running" state does
+not appear in the cell — the feedback is audible only (the sound starts or stops).</p>
+</div>
+
+<h2 id="cables">8. Patching cables</h2>
+
+<p>Cables are created from the <strong>Outputs</strong> and <strong>Inputs</strong>
+views, in two steps:</p>
+
+<ol>
+  <li>Go to a port (output or input) and press <kbd>Enter</kbd>: a connection begins.
+  The status bar confirms it and you return to the Rack view.</li>
+  <li>Navigate to the destination module, open its ports of the <strong>opposite</strong>
+  type (if you started from an output, go to an input, and vice versa), and press
+  <kbd>Enter</kbd> again on the chosen port: the cable is created. The screen reader
+  announces "Connected: source module → destination module".</li>
+</ol>
+
+<p>To cancel a connection you started but did not complete, press <kbd>Esc</kbd>.</p>
+
+<h3>Disconnecting cables</h3>
+<p>In the Outputs or Inputs view, on the focused port, press <kbd>Del</kbd> or
+<kbd>Backspace</kbd>: every cable on that port is disconnected (undoable with
+<kbd>Ctrl</kbd>+<kbd>Z</kbd>).</p>
+
+<h2 id="selection">9. Multiple module selection</h2>
+
+<p>In the Rack view you can select several modules to act on them together.</p>
+
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>Space</kbd></td><td>Adds or removes the focused module from the selection. The screen reader announces "selected" / "N modules selected".</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>Backspace</kbd></td><td>Quickly clears the selection (deletes nothing).</td></tr>
+<tr><td><kbd>Del</kbd></td><td>Deletes all selected modules (with a "Delete N modules?" confirmation).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Randomizes the parameters of the selected modules.</td></tr>
+</tbody>
+</table>
+
+<p>Selected modules stay marked in the list (the screen reader notes it as you
+scroll). The <em>Edit</em> menu also offers "Select all", "Deselect", and operations
+on the whole selection (Copy, Reset, Randomize, Disconnect, Bypass).</p>
+
+<h2 id="context">10. Module context menus</h2>
+
+<p>Every module offers extra commands through context menus. MetaRack exposes two
+distinct kinds.</p>
+
+<h3>Generic context menu</h3>
+<p>On the focused module (in the Rack view), press the <kbd>Application key</kbd> or
+<kbd>Shift</kbd>+<kbd>F10</kbd>. A list opens with the actions common to all modules:
+<em>initialize</em>, <em>randomize</em>, <em>disconnect</em>, <em>bypass</em>
+(toggle), <em>duplicate</em> (with and without cables), <em>delete</em>.</p>
+
+<h3>Module-specific context menu</h3>
+<p>Press <kbd>Ctrl</kbd>+<kbd>Application key</kbd> (from the Rack, Parameters,
+Outputs or Inputs views). This opens the list of options <strong>specific</strong>
+to that module — the same ones that, in the graphical interface, appear at the
+bottom of its context menu. For example, on a MIDI-to-CV you find: polyphony channel
+count, voice allocation mode, pitch-bend range, clock divider, MIDI reset (Panic),
+and so on. This is where you find everything a module's documentation describes that
+is not exposed as a parameter or a port.</p>
+
+<h3>Navigating context menus</h3>
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Move through the items.</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Runs the item. If the item has a submenu, enters it (a new level).</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Goes back one level; at the top level, closes the menu and returns to the previous view.</td></tr>
+</tbody>
+</table>
+<p>Items that are active with a checkmark are announced as "selected".</p>
+
+<h2 id="displays">11. Clickable displays (D key)</h2>
+
+<p>Some modules have small text displays on their panel that, in the graphical
+interface, you click to choose an option: for example the audio device and sample
+rate on the Audio module, the device and channel on the MIDI modules, or the "learn"
+cell of the MIDI-CC module. These are neither parameters nor ports, so they do not
+appear in the usual lists.</p>
+
+<p>From the <strong>Rack</strong> or <strong>Parameters</strong> view, press
+<kbd>D</kbd> (no modifiers) to list the current module's clickable displays. From
+there:</p>
+
+<ul>
+  <li><strong>Menu displays</strong> (e.g. choosing the audio device): <kbd>Enter</kbd>
+  opens the list of options, you scroll with the arrows and choose one with
+  <kbd>Enter</kbd>. Submenus are navigated like other context menus.</li>
+  <li><strong>Learn displays</strong> (e.g. a MIDI-CC learn): <kbd>Enter</kbd>
+  activates learn mode; move a control on your MIDI device to assign it, or use
+  <kbd>Space</kbd> to toggle and <kbd>Esc</kbd> to cancel.</li>
+</ul>
+
+<p>If the module has no clickable displays, the status bar says so.</p>
+
+<h2 id="midi-keyboard">12. Playing notes from the computer keyboard (Shift+K)</h2>
+
+<p>MetaRack can turn the computer keyboard into a small musical keyboard that sends
+MIDI notes, just like the original VCV Rack. Since the keyboard is normally used to
+navigate the interface, this feature is <strong>turned on and off</strong> with
+<kbd>Shift</kbd>+<kbd>K</kbd>: the screen reader announces "MIDI keyboard on" or
+"MIDI keyboard off".</p>
+
+<p>Before you can play, you must tell a MIDI module to listen to the computer
+keyboard. For example add a <strong>MIDI-CV</strong> module, press <kbd>D</kbd> to
+open its clickable displays and choose the <em>"Computer keyboard"</em> device. Then
+patch the MIDI-CV's V/Oct (and Gate) output into an oscillator so you can hear the
+notes.</p>
+
+<p>While the mode is <strong>on</strong>:</p>
+<ul>
+  <li>Keys that map to a note play, with the same layout as VCV Rack: the
+  <kbd>Z</kbd> <kbd>X</kbd> <kbd>C</kbd> <kbd>V</kbd>… row is a piano keyboard (the
+  white keys) and the row above, <kbd>S</kbd> <kbd>D</kbd> <kbd>G</kbd>…, the black
+  keys; the <kbd>Q</kbd> <kbd>W</kbd> <kbd>E</kbd>… row repeats everything one octave
+  higher.</li>
+  <li>The <kbd>backtick</kbd> (<kbd>`</kbd>) and <kbd>1</kbd> keys lower and raise the
+  octave.</li>
+  <li><strong>Navigation stays active:</strong> the arrows, <kbd>Tab</kbd>,
+  <kbd>Enter</kbd>, <kbd>Esc</kbd> and every <kbd>Ctrl</kbd> or <kbd>Shift</kbd>
+  shortcut keep driving the interface as usual. Only the keys that produce a note are
+  "captured" by the synthesizer.</li>
+</ul>
+
+<p>As a result, while the mode is on the single-letter jumps <kbd>P</kbd>,
+<kbd>O</kbd>, <kbd>I</kbd> and <kbd>D</kbd> play a note instead of switching view: to
+move around use the arrows or <kbd>Tab</kbd>, or turn the MIDI keyboard off with
+<kbd>Shift</kbd>+<kbd>K</kbd>. When you turn the mode off, any notes still held down
+are released, so no sound gets stuck.</p>
+
+<h2 id="menubar">13. The menu bar</h2>
+
+<p>At the top of the window there is a native menu bar, identical to VCV Rack's. You
+open it with <kbd>Alt</kbd> and navigate it with the arrows — the screen reader reads
+item names, submenus and checkmarks natively.</p>
+
+<table>
+<thead><tr><th>Menu</th><th>Main contents</th></tr></thead>
+<tbody>
+<tr><td><strong>File</strong></td><td>New, Open, Open recent, Save, Save as, Save a copy, Revert, Overwrite template, Import selection, Quit.</td></tr>
+<tr><td><strong>Edit</strong></td><td>Undo, Redo, Disconnect all cables, and the selection actions (Select all, Deselect, Copy, Reset, Randomize, Disconnect, Bypass).</td></tr>
+<tr><td><strong>View</strong></td><td>Fullscreen, Zoom, Theme, Cable opacity and tension, Brightness, Knob mode, and various toggles (Tooltips, Lock cursor, Lock modules, etc.). Continuous settings are offered as submenus of preset values.</td></tr>
+<tr><td><strong>Engine</strong></td><td>CPU meter, Sample rate (Auto, 44.1–192 kHz), thread count.</td></tr>
+<tr><td><strong>Library</strong></td><td>If you are not signed in: Register and Log in (with an Email/Password dialog). If you are signed in: Log out, Account, Browse, Update all.</td></tr>
+<tr><td><strong>Help</strong></td><td>Language (requires a restart), Tips, Manual, Support, User folder, Changelog, Check for updates.</td></tr>
+</tbody>
+</table>
+
+<h3>Interface language</h3>
+<p>MetaRack is available in English and Italian. The language follows the choice in
+<em>Help → Language</em>: English is the default, Italian is activated by selecting
+it (the change requires restarting the program).</p>
+
+<h2 id="shortcuts">14. Keyboard shortcut reference</h2>
+
+<h3>Global commands (from any view)</h3>
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Go to the Rack view (or refresh the list if already there).</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Go to the Library view.</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>K</kbd></td><td>Toggle the computer-keyboard MIDI mode (play notes with the keys; see section 12).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>New patch.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open patch.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></td><td>Revert to the saved file.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>Save as…</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Redo.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Randomize the selected modules.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit MetaRack.</td></tr>
+<tr><td><kbd>F1</kbd></td><td>Open the online VCV Rack manual in the browser.</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Cancel a pending cable; or return to the Rack view.</td></tr>
+</tbody>
+</table>
+
+<h3>Rack view</h3>
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Move through modules in the row.</td></tr>
+<tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Jump between rows.</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Open the module's Parameters / insert on a free slot.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>Move the module to a new row.</td></tr>
+<tr><td><kbd>P</kbd> / <kbd>O</kbd> / <kbd>I</kbd></td><td>Go to the module's Parameters / Outputs / Inputs.</td></tr>
+<tr><td><kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Add/remove the module from the multiple selection.</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>Backspace</kbd></td><td>Clear the selection.</td></tr>
+<tr><td><kbd>Del</kbd> / <kbd>Backspace</kbd></td><td>Delete the module (or the whole selection).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copy / paste the module's preset.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>Duplicate without / with cables.</td></tr>
+<tr><td><kbd>Application key</kbd> / <kbd>Shift</kbd>+<kbd>F10</kbd></td><td>Generic context menu.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Application key</kbd></td><td>Module-specific context menu.</td></tr>
+</tbody>
+</table>
+
+<h3>Parameters view</h3>
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Decrease / increase (normal step).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+ arrows</td><td>Fine step (×1/10).</td></tr>
+<tr><td><kbd>Shift</kbd>+ arrows</td><td>Coarse step (×4).</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+ arrows</td><td>Ultra-fine step (×1/100).</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Latching switch / momentary button.</td></tr>
+<tr><td><kbd>Backspace</kbd></td><td>Reset to default value.</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Open "Set value".</td></tr>
+<tr><td><kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
+<tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle between Parameters / Outputs / Inputs.</td></tr>
+</tbody>
+</table>
+
+<h3>Outputs and Inputs views</h3>
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>Enter</kbd></td><td>Start a cable (first Enter) or complete it (second Enter on a compatible port).</td></tr>
+<tr><td><kbd>Del</kbd> / <kbd>Backspace</kbd></td><td>Disconnect the cables on the focused port.</td></tr>
+<tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle between Parameters / Outputs / Inputs.</td></tr>
+</tbody>
+</table>
+
+<hr>
+<p><small>MetaRack is an independent application derived from VCV Rack Free
+(GPLv3 license). It retains full compatibility with VCV Rack files and plugins.</small></p>
+
+</body>
+</html>

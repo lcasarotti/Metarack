@@ -95,6 +95,14 @@ struct AccessibleWindow {
 	bool                  rackDirty        = true;
 	std::vector<ContextMenuItem> contextItems;
 
+	// ── Computer-keyboard MIDI mode (Shift+K) ─────────────────────────────────
+	// When on, keys that map to a musical note/octave are routed to Rack's
+	// "Computer keyboard" MIDI driver instead of driving the accessible UI; every
+	// other key still navigates. See ChildSubclassProc.
+	bool                  midiKeyboardMode = false;
+	bool                  swallowNextChar  = false;  // eat the WM_CHAR that trails a routed note
+	std::vector<int>      heldMidiKeys;              // GLFW key codes of notes currently held down
+
 	// ── Display cell navigation (D key) ───────────────────────────────────────
 	std::vector<DisplayCell>                  displayCells;
 	std::vector<std::vector<ContextMenuItem>> menuStack;       // stack of menu levels
@@ -167,6 +175,14 @@ private:
 	void repopulateParamView();   // full rebuild (on module switch)
 	void refreshParamValues();    // update value column only (on timer)
 	void refreshPortView(bool isOutput);
+
+	// Toggle computer-keyboard MIDI mode (Shift+K); announces the new state and
+	// releases any still-held notes when turning off.
+	void toggleMidiKeyboard();
+	// Win32 VK -> GLFW key code, but ONLY for keys the keyboard MIDI driver maps
+	// to a note/octave (both QWERTY and Numpad layouts). Returns 0 for anything
+	// else, so non-playable keys fall through to normal navigation.
+	static int midiKeyForVk(WPARAM vk);
 
 	void handleRackKey(WPARAM vk);
 	// Clipboard / duplicate shortcuts in the RACK list (Ctrl+C/V/D, Ctrl+Shift+D).
