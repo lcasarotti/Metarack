@@ -48,6 +48,7 @@
 #include <system.hpp>
 #include <asset.hpp>
 #include <library.hpp>
+#include <keyboard.hpp>
 
 #include <algorithm>
 #include <map>
@@ -230,6 +231,16 @@ struct AccessibleWindow::Internal {
 
 	// Mutations queued from Cocoa event handlers, run from drainCommands().
 	std::vector<std::function<void()>> commandQueue;
+
+	// Computer-keyboard MIDI mode (Shift+K). When on, keys that map to a note/octave
+	// are routed to Rack's "Computer keyboard" MIDI driver instead of driving the
+	// accessible UI; every other key still navigates. heldMidiKeys holds the GLFW key
+	// codes of notes currently down, so they can be released on key-up or when the mode
+	// is switched off. keyMonitor is the single NSEvent local monitor that implements
+	// the routing (see midiKeyboardMonitor); released in the destructor.
+	bool             midiKeyboardMode = false;
+	std::vector<int> heldMidiKeys;
+	id               keyMonitor       = nil;
 };
 
 // ── Localization ─────────────────────────────────────────────────────────────
@@ -265,6 +276,119 @@ static void setStatus(AccessibleWindow* self, const std::string& msg) {
 
 static void pushCommand(AccessibleWindow* self, std::function<void()> fn) {
 	self->internal->commandQueue.push_back(std::move(fn));
+}
+
+// ── Computer-keyboard MIDI mode (Shift+K) ─────────────────────────────────────
+// macOS virtual key code -> GLFW key code, restricted to the keys Rack's "Computer
+// keyboard" MIDI driver maps to a note/octave (see deviceInfos in src/keyboard.cpp).
+// Both the macOS keycodes and the GLFW codes are positional (hardware QWERTY/numpad
+// layout), so the note positions line up regardless of the active keyboard layout.
+// Returns 0 for anything else, so non-playable keys fall through to normal navigation.
+// Mirrors the Win32 AccessibleWindow::midiKeyForVk. The hex literals are the macOS
+// kVK_ANSI_* / kVK_ANSI_Keypad* virtual key codes (no Carbon header needed).
+static int midiKeyForKeyCode(unsigned short kc) {
+	static const std::map<unsigned short, int> map = {
+		// QWERTY — octave controls
+		{ 0x32, GLFW_KEY_GRAVE_ACCENT },  // ` octave down
+		{ 0x12, GLFW_KEY_1 },             // 1 octave up
+		// QWERTY — lower row
+		{ 0x06, GLFW_KEY_Z }, { 0x01, GLFW_KEY_S }, { 0x07, GLFW_KEY_X },
+		{ 0x02, GLFW_KEY_D }, { 0x08, GLFW_KEY_C }, { 0x09, GLFW_KEY_V },
+		{ 0x05, GLFW_KEY_G }, { 0x0B, GLFW_KEY_B }, { 0x04, GLFW_KEY_H },
+		{ 0x2D, GLFW_KEY_N }, { 0x26, GLFW_KEY_J }, { 0x2E, GLFW_KEY_M },
+		{ 0x2B, GLFW_KEY_COMMA }, { 0x25, GLFW_KEY_L },
+		{ 0x2F, GLFW_KEY_PERIOD }, { 0x29, GLFW_KEY_SEMICOLON },
+		{ 0x2C, GLFW_KEY_SLASH },
+		// QWERTY — upper row
+		{ 0x0C, GLFW_KEY_Q }, { 0x13, GLFW_KEY_2 }, { 0x0D, GLFW_KEY_W },
+		{ 0x14, GLFW_KEY_3 }, { 0x0E, GLFW_KEY_E }, { 0x0F, GLFW_KEY_R },
+		{ 0x17, GLFW_KEY_5 }, { 0x11, GLFW_KEY_T }, { 0x16, GLFW_KEY_6 },
+		{ 0x10, GLFW_KEY_Y }, { 0x1A, GLFW_KEY_7 }, { 0x20, GLFW_KEY_U },
+		{ 0x22, GLFW_KEY_I }, { 0x19, GLFW_KEY_9 }, { 0x1F, GLFW_KEY_O },
+		{ 0x1D, GLFW_KEY_0 }, { 0x23, GLFW_KEY_P },
+		{ 0x21, GLFW_KEY_LEFT_BRACKET }, { 0x18, GLFW_KEY_EQUAL },
+		{ 0x1E, GLFW_KEY_RIGHT_BRACKET },
+		// Numpad layout
+		{ 0x4B, GLFW_KEY_KP_DIVIDE }, { 0x43, GLFW_KEY_KP_MULTIPLY },
+		{ 0x52, GLFW_KEY_KP_0 }, { 0x41, GLFW_KEY_KP_DECIMAL },
+		{ 0x53, GLFW_KEY_KP_1 }, { 0x54, GLFW_KEY_KP_2 },
+		{ 0x55, GLFW_KEY_KP_3 }, { 0x56, GLFW_KEY_KP_4 },
+		{ 0x57, GLFW_KEY_KP_5 }, { 0x58, GLFW_KEY_KP_6 },
+		{ 0x45, GLFW_KEY_KP_ADD }, { 0x59, GLFW_KEY_KP_7 },
+		{ 0x5B, GLFW_KEY_KP_8 }, { 0x5C, GLFW_KEY_KP_9 },
+	};
+	auto it = map.find(kc);
+	return it != map.end() ? it->second : 0;
+}
+
+// Toggle computer-keyboard MIDI mode; announce the new state and release any still-held
+// notes when turning off, so they don't stick. Mirrors Win32 toggleMidiKeyboard.
+static void toggleMidiKeyboard(AccessibleWindow* self) {
+	bool& on = self->internal->midiKeyboardMode;
+	on = !on;
+	if (!on) {
+		for (int g : self->internal->heldMidiKeys)
+			keyboard::release(g);
+		self->internal->heldMidiKeys.clear();
+	}
+	setStatus(self, on
+	          ? L("MIDI keyboard on.", "Tastiera MIDI attivata.")
+	          : L("MIDI keyboard off.", "Tastiera MIDI disattivata."));
+}
+
+// Single key-event hub, installed as an NSEvent local monitor in create(). Returns true if
+// the event was consumed. Shift+K toggles the mode in either state; while on, bare note/
+// octave keys are routed to the keyboard MIDI driver and every other key (and any key with
+// a modifier) falls through to the per-view keyDown handlers, so navigation stays live.
+// This is the Cocoa analogue of the Win32 ChildSubclassProc MIDI block — one place, which
+// also lets us receive key-up (NSTableView does not deliver keyUp to its subclasses).
+static bool midiKeyboardMonitor(AccessibleWindow* self, NSEvent* e) {
+	if (!self->internal || !self->internal->visible)
+		return false;
+	// Only when our panel is focused, and never while editing a text field (the field
+	// editor is an NSText), so typing into a value/login dialog is unaffected.
+	if ([e window] != self->internal->panel)
+		return false;
+	if ([[self->internal->panel firstResponder] isKindOfClass:[NSText class]])
+		return false;
+
+	NSEventModifierFlags m = [e modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
+	bool cmd   = (m & NSEventModifierFlagCommand) != 0;
+	bool shift = (m & NSEventModifierFlagShift) != 0;
+	bool alt   = (m & NSEventModifierFlagOption) != 0;
+	bool ctrl  = (m & NSEventModifierFlagControl) != 0;
+
+	// Shift+K toggles the mode (Shift only — Cmd/Ctrl/Option combos pass through).
+	if ([e type] == NSEventTypeKeyDown && shift && !cmd && !ctrl && !alt
+	    && [[[e charactersIgnoringModifiers] lowercaseString] isEqualToString:@"k"]) {
+		toggleMidiKeyboard(self);
+		return true;
+	}
+
+	if (!self->internal->midiKeyboardMode)
+		return false;
+
+	int g = midiKeyForKeyCode([e keyCode]);
+	std::vector<int>& held = self->internal->heldMidiKeys;
+
+	if ([e type] == NSEventTypeKeyDown) {
+		if (g && !cmd && !shift && !alt && !ctrl) {
+			if (![e isARepeat]) {            // ignore auto-repeat
+				keyboard::press(g);
+				held.push_back(g);
+			}
+			return true;                     // consume: no nav, no list typeahead
+		}
+	}
+	else if ([e type] == NSEventTypeKeyUp) {
+		auto it = std::find(held.begin(), held.end(), g);
+		if (g && it != held.end()) {         // release only notes we actually pressed
+			keyboard::release(g);
+			held.erase(it);
+			return true;
+		}
+	}
+	return false;
 }
 
 // ── Menu bar helpers ─────────────────────────────────────────────────────────
@@ -2783,6 +2907,18 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 
 	instance = self;
 
+	// Computer-keyboard MIDI mode hub (Shift+K). A single NSEvent local monitor routes
+	// note keys to the keyboard MIDI driver while the mode is on; see midiKeyboardMonitor.
+	// One monitor (rather than per-view keyDown overrides) keeps the behavior identical
+	// across every list and is the only way to also receive key-up, which NSTableView does
+	// not deliver to its subclasses. Returning nil swallows the event; returning it lets
+	// the normal keyDown navigation run.
+	self->internal->keyMonitor =
+	    [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskKeyDown | NSEventMaskKeyUp)
+	                                          handler:^NSEvent* (NSEvent* e) {
+		return midiKeyboardMonitor(self, e) ? nil : e;
+	}];
+
 	// Native menu bar (App/File/Edit/View/Engine/Library/Help). Its key equivalents
 	// provide the global shortcuts (⌘N/⌘S/⌘Z…), so no event monitor is needed. GLFW
 	// left NSApp without a menu (GLFW_COCOA_MENUBAR = FALSE).
@@ -2803,6 +2939,10 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 AccessibleWindow::~AccessibleWindow() {
 	if (internal) {
 		[NSApp setMainMenu:nil];
+		if (internal->keyMonitor) {
+			[NSEvent removeMonitor:internal->keyMonitor];
+			internal->keyMonitor = nil;
+		}
 		cleanupContextMenu(this);   // free any detached appendContextMenu() menus
 
 		// Detach the datasource/delegate from every view before releasing the controller.
