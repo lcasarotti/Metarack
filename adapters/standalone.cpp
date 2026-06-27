@@ -294,6 +294,12 @@ int main(int argc, char* argv[]) {
 	if (!settings::headless) {
 		INFO("Creating accessible window");
 		accessibleWindow = rack::accessible::AccessibleWindow::create(APP->window->win);
+		// MetaRack presents only the accessible window. Hide the Rack GLFW window: the
+		// engine and widget tree stay alive (the accessible window reads from them; only
+		// the OpenGL draw is skipped while hidden — see the GLFW_VISIBLE guard in
+		// Window::step). The accessible panel is a top-level, un-owned window, so hiding
+		// Rack doesn't hide it. Mirrors the ARCH_WIN path above.
+		glfwHideWindow(APP->window->win);
 	}
 #endif
 

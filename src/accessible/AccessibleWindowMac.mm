@@ -1748,26 +1748,21 @@ static bool toggleLearnSelect(AccessibleWindow* self) {
 	return true;
 }
 
-// ── Show / hide ──────────────────────────────────────────────────────────────
-static void setLayerVisible(AccessibleWindow* self, bool show) {
+// ── Show ─────────────────────────────────────────────────────────────────────
+// MetaRack presents ONLY the accessible interface (the Win32 layer made the same
+// choice). So the panel is a standalone top-level window — NOT a child of the Rack
+// window. standalone.cpp hides the Rack GLFW window right after create(), and a child
+// window would be ordered out together with its hidden parent; an un-owned top-level
+// window stays visible. Shown unconditionally at startup; there is no toggle anymore.
+static void showLayer(AccessibleWindow* self) {
 	AccessibleWindow::Internal* in = self->internal;
-	settings::accessibleLayerVisible = show;
-	if (show) {
-		[in->panel setFrame:[in->rackWindow frame] display:YES];
-		[in->rackWindow addChildWindow:in->panel ordered:NSWindowAbove];
-		[in->panel makeKeyAndOrderFront:nil];
-		in->visible = true;
-		// Always rebuild on show so the list reflects any changes made in the GUI.
-		in->rackDirty = true;
-		switchTo(self, in->currentView);
-		announce(self, L("Accessible interface", "Interfaccia accessibile"));
-	}
-	else {
-		[in->rackWindow removeChildWindow:in->panel];
-		[in->panel orderOut:nil];
-		[in->rackWindow makeKeyAndOrderFront:nil];
-		in->visible = false;
-	}
+	// Size/position over where the (about-to-be-hidden) Rack window sits.
+	[in->panel setFrame:[in->rackWindow frame] display:YES];
+	[in->panel makeKeyAndOrderFront:nil];
+	in->visible = true;
+	// Rebuild so the list reflects the loaded patch, then focus the current view.
+	in->rackDirty = true;
+	switchTo(self, in->currentView);
 }
 
 } // namespace accessible
@@ -2171,7 +2166,7 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 // Single target for every menu item: routes -fire: to the command's action, sets
 // checkmarks in -validateMenuItem:, and rebuilds the dynamic submenus as their
 // delegate. Mirrors the Win32 WM_COMMAND / WM_INITMENUPOPUP handling.
-@interface AXMenuTarget : NSObject <NSMenuDelegate> {
+@interface AXMenuTarget : NSObject <NSMenuDelegate, NSWindowDelegate> {
 @public
 	rack::accessible::AccessibleWindow* owner;
 }
@@ -2187,6 +2182,15 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 }
 - (void)menuNeedsUpdate:(NSMenu*)menu {
 	rack::accessible::menuNeedsUpdate(owner, menu);
+}
+// The accessible panel is the only window now, so closing it quits MetaRack (the Win32
+// layer does the same on WM_CLOSE). Ask the run loop to stop — that makes Window::run()
+// return and standalone.cpp tear everything down — and return NO so the NSWindow isn't
+// destroyed out from under that teardown.
+- (BOOL)windowShouldClose:(id)sender {
+	if (APP && APP->window)
+		APP->window->close();
+	return NO;
 }
 @end
 
@@ -2467,10 +2471,6 @@ static void buildMenuBar(AccessibleWindow* self) {
 
 	// ── View ────────────────────────────────────────────────────────────────────
 	NSMenu* view = addSub(mainMenu, L("View", "Vista"));
-	addCmd(self, view, L("Toggle accessible interface", "Mostra/nascondi interfaccia accessibile"), [self]() {
-		setLayerVisible(self, !self->internal->visible);
-	}, nullptr, @"a", NSEventModifierFlagCommand | NSEventModifierFlagShift);
-	axSep(view);
 	addCmd(self, view, L("Fullscreen", "Schermo intero"), [self]() {
 		pushCommand(self, []() { APP->window->setFullScreen(!APP->window->isFullScreen()); });
 	}, []() { return APP->window->isFullScreen(); });
@@ -2644,7 +2644,7 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	              styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
 	                backing:NSBackingStoreBuffered
 	                  defer:NO];
-	[panel setTitle:@"Rack"];
+	[panel setTitle:nsstr(APP_NAME)];
 	[panel setReleasedWhenClosed:NO];
 	NSView* content = [panel contentView];
 	[content setAutoresizesSubviews:YES];
@@ -2784,15 +2784,17 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	instance = self;
 
 	// Native menu bar (App/File/Edit/View/Engine/Library/Help). Its key equivalents
-	// provide the global shortcuts (⌘N/⌘S/⌘Z…) and the toggle (⇧⌘A), so no event
-	// monitor is needed. GLFW left NSApp without a menu (GLFW_COCOA_MENUBAR = FALSE).
+	// provide the global shortcuts (⌘N/⌘S/⌘Z…), so no event monitor is needed. GLFW
+	// left NSApp without a menu (GLFW_COCOA_MENUBAR = FALSE).
 	AXMenuTarget* menuTarget = [[AXMenuTarget alloc] init];
 	menuTarget->owner = self;
 	self->internal->menuTarget = menuTarget;
+	// menuTarget also handles the panel's close button (windowShouldClose: quits).
+	[panel setDelegate:(id) menuTarget];
 	buildMenuBar(self);
 
-	if (settings::accessibleLayerVisible)
-		setLayerVisible(self, true);
+	// MetaRack shows the accessible interface unconditionally — no toggle.
+	showLayer(self);
 
 	INFO("Accessible (macOS) window created");
 	return self;
@@ -2823,6 +2825,7 @@ AccessibleWindow::~AccessibleWindow() {
 			((RackAXController*) internal->controller)->owner = nullptr;
 
 		if (internal->panel) {
+			[internal->panel setDelegate:nil];  // delegate (menuTarget) is released below
 			[internal->panel orderOut:nil];
 			[internal->panel release];
 		}
