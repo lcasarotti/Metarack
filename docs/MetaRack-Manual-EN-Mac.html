@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MetaRack Manual</title>
+<title>MetaRack Manual (macOS)</title>
 <style>
   body { font-family: Georgia, "Times New Roman", serif; line-height: 1.6;
          max-width: 60rem; margin: 0 auto; padding: 1.5rem; color: #1a1a1a; }
@@ -13,9 +13,9 @@
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
   th, td { border: 1px solid #999; padding: .4rem .6rem; text-align: left; vertical-align: top; }
   th { background: #eee; }
-  kbd { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
+  kbd { font-family: Menlo, Consolas, "Courier New", monospace; background: #f0f0f0;
         border: 1px solid #aaa; border-radius: 3px; padding: 0 .35rem; white-space: nowrap; }
-  code { font-family: Consolas, "Courier New", monospace; background: #f4f4f4; padding: 0 .25rem; }
+  code { font-family: Menlo, Consolas, "Courier New", monospace; background: #f4f4f4; padding: 0 .25rem; }
   nav { background: #f7f7f7; border: 1px solid #ccc; padding: .8rem 1.2rem; border-radius: 6px; }
   .lang-switch { font-size: .9rem; }
   .note { background: #eef6ff; border-left: 4px solid #3b82f6; padding: .5rem 1rem; margin: 1rem 0; }
@@ -23,20 +23,21 @@
 </head>
 <body>
 
-<p class="lang-switch"><a href="MetaRack-Manuale-IT.html" lang="it">Versione italiana</a> ·
-<a href="MetaRack-Manual-EN-Mac.html">macOS version</a></p>
+<p class="lang-switch"><a href="MetaRack-Manuale-IT-Mac.html" lang="it">Versione italiana</a> ·
+<a href="MetaRack-Manual-EN.html">Windows version</a></p>
 
-<h1>MetaRack Manual</h1>
+<h1>MetaRack Manual (macOS)</h1>
 
 <p>MetaRack is a software modular synthesizer that is fully keyboard-accessible and
-screen-reader compatible (on Windows: NVDA, Jaws, Narrator). It is built on VCV Rack : every operation — adding modules, adjusting
-parameters, patching cables — is done without a mouse, with spoken feedback your
-screen reader can read.</p>
+compatible with macOS's <strong>VoiceOver</strong> screen reader. It is built on VCV Rack: every operation — adding modules, adjusting
+parameters, patching cables — is done without a mouse, with spoken feedback VoiceOver
+can read.</p>
 
 <div class="note">
-<p>This manual covers MetaRack's accessible interface. For details about individual
-modules, numeric expressions, and general modular-synthesis concepts, the online
-VCV Rack manual still applies; you can open it at any time with <kbd>F1</kbd>.</p>
+<p>This manual covers MetaRack's accessible interface <strong>on macOS</strong>. For
+details about individual modules, numeric expressions, and general modular-synthesis
+concepts, the online VCV Rack manual still applies; you can open it at any time from the
+menu bar with <em>Help → Manual</em>.</p>
 </div>
 
 <nav aria-label="Table of contents">
@@ -66,10 +67,10 @@ connecting modules (oscillators, filters, sequencers, mixers…) with cables, ex
 as in a physical Eurorack system. Its original interface is purely graphical and
 therefore inaccessible to a screen reader.</p>
 
-<p>MetaRack replaces that graphics with an interface made of native operating-system
-controls (lists, trees, a menu bar) that a screen reader can read and announce. The
-underlying audio engine is identical to VCV Rack: the same modules, the same sounds,
-the same patch files.</p>
+<p>MetaRack replaces that graphics with an interface made of native macOS controls
+(lists, trees, a menu bar) that VoiceOver can read and announce. The underlying audio
+engine is identical to VCV Rack: the same modules, the same sounds, the same patch
+files.</p>
 
 <p>MetaRack shares VCV Rack's user folder, installed plugins, and online-library
 access; your patches stay compatible in both directions.</p>
@@ -77,15 +78,15 @@ access; your patches stay compatible in both directions.</p>
 <h2 id="startup">2. Starting and quitting</h2>
 
 <h3>Starting the program</h3>
-<p>Launch MetaRack like any application (from the Start menu or its icon). On open,
-the "MetaRack" accessible window immediately receives the foreground and focus, and
-your screen reader announces its title. There is no separate graphical window to
-hunt for: the accessible interface <strong>is</strong> the program.</p>
+<p>Launch MetaRack like any application: from Launchpad, the <em>Applications</em>
+folder, or the Dock. On open, the "MetaRack" accessible window immediately receives
+the foreground and focus, and VoiceOver announces its title. There is no separate
+graphical window to hunt for: the accessible interface <strong>is</strong> the program.</p>
 
 <h3>Quitting the program</h3>
-<p>To quit, use <kbd>Ctrl</kbd>+<kbd>Q</kbd>, or <kbd>Alt</kbd>+<kbd>F4</kbd>, or the
-<em>File → Quit</em> menu item. Your current work is saved automatically (autosave),
-as in VCV Rack: reopening brings you back to where you left off.</p>
+<p>To quit, use <kbd>Cmd</kbd>+<kbd>Q</kbd>, or the <em>MetaRack → Quit</em> menu item.
+Your current work is saved automatically (autosave), as in VCV Rack: reopening brings
+you back to where you left off.</p>
 
 <div class="note">
 <p>Only one instance can run at a time. If MetaRack is already open (or a "real"
@@ -138,11 +139,11 @@ MetaRack faithfully reproduces this layout as a <strong>two-dimensional grid</st
   <li>You can also type a module's initial letter to jump to it (type-ahead search).</li>
 </ul>
 
-<p>For each item, the screen reader announces the module name followed by its
-position, in the form "<em>— row N, slot M</em>". The <strong>row</strong> is the
-line (starting at 1); the <strong>slot</strong> is the module's sequential position
-within that row (starting at 1). This numbering is meant for orientation; it does
-not correspond to physical HP units.</p>
+<p>For each item, VoiceOver announces the module name followed by its position, in the
+form "<em>— row N, slot M</em>". The <strong>row</strong> is the line (starting at 1);
+the <strong>slot</strong> is the module's sequential position within that row (starting
+at 1). This numbering is meant for orientation; it does not correspond to physical HP
+units.</p>
 
 <h3>Free slots</h3>
 <p>Each row ends with a "<strong>[ Free slot ]</strong>" item: that is where you
@@ -154,15 +155,18 @@ insert a new module. An empty rack contains a single free slot.</p>
 <tbody>
 <tr><td><kbd>Enter</kbd></td><td>on a module</td><td>Opens the module's Parameters.</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>on a free slot</td><td>If you just chose a model in the Library, inserts it here; otherwise opens the Library to pick one.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>on a module</td><td>Moves the focused module to a <strong>new row</strong> (grows the patch downward).</td></tr>
-<tr><td><kbd>Del</kbd> or <kbd>Backspace</kbd></td><td>on a module</td><td>Deletes the module (with confirmation). If a multiple selection is active, deletes the whole selection.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>on a module</td><td>Copies the module's preset to the clipboard.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>on a module</td><td>Pastes the copied preset onto the focused module (overwrites its settings).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>on a free slot</td><td>Inserts a <strong>new</strong> module from the clipboard at the end of the row.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>on a module</td><td>Duplicates the module (without cables).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>on a module</td><td>Duplicates the module keeping its cables.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Enter</kbd></td><td>on a module</td><td>Moves the focused module to a <strong>new row</strong> (grows the patch downward).</td></tr>
+<tr><td><kbd>Delete</kbd> or <kbd>Fn</kbd>+<kbd>Delete</kbd></td><td>on a module</td><td>Deletes the module (with confirmation). If a multiple selection is active, deletes the whole selection.</td></tr>
 </tbody>
 </table>
+
+<div class="note">
+<p><strong>Copying and duplicating modules.</strong> On macOS, preset copy/paste and
+duplication have no single-module shortcuts in the grid: to <em>duplicate</em> a module
+(with or without cables), open its context menu with <kbd>Cmd</kbd>+<kbd>M</kbd> (see
+section 10); to <em>copy and paste</em>, use the menu bar's <em>Edit</em> menu ("Copy
+selection", "Paste"), which acts on the current selection (see section 9).</p>
+</div>
 
 <h2 id="library">5. Adding modules from the Library</h2>
 
@@ -201,8 +205,8 @@ individual modules each one offers.</p>
   <li><strong>Inputs</strong> — the input ports, with the same kind of state.</li>
 </ul>
 
-<p>Scroll each list with <kbd>↑</kbd> and <kbd>↓</kbd>. The screen reader announces
-each row's name and value (or state).</p>
+<p>Scroll each list with <kbd>↑</kbd> and <kbd>↓</kbd>. VoiceOver announces each row's
+name and value (or state).</p>
 
 <h2 id="values">7. Adjusting parameters</h2>
 
@@ -212,13 +216,13 @@ each row's name and value (or state).</p>
 <thead><tr><th>Key</th><th>Action</th></tr></thead>
 <tbody>
 <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Decrease / increase by a normal step (about 1% of the range).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>→</kbd></td><td>Fine step (one tenth of normal).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>←</kbd> / <kbd>Cmd</kbd>+<kbd>→</kbd></td><td>Fine step (one tenth of normal).</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>Shift</kbd>+<kbd>→</kbd></td><td>Coarse step (four times normal).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Ultra-fine step (one hundredth of normal).</td></tr>
-<tr><td><kbd>Backspace</kbd></td><td>Resets the parameter to its default value.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Ultra-fine step (one hundredth of normal).</td></tr>
+<tr><td><kbd>Delete</kbd></td><td>Resets the parameter to its default value.</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>Opens the "Set value" dialog to type an exact value.</td></tr>
 <tr><td><kbd>Space</kbd></td><td>For latching switches: cycle the values. For momentary buttons (e.g. a sequencer's Run): one press = one trigger.</td></tr>
-<tr><td><kbd>Application key</kbd> or <kbd>Shift</kbd>+<kbd>F10</kbd></td><td>Opens the parameter's context menu ("Set value…" and "Reset to default").</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Opens the parameter's context menu ("Set value…" and "Reset to default").</td></tr>
 </tbody>
 </table>
 
@@ -248,16 +252,16 @@ views, in two steps:</p>
   The status bar confirms it and you return to the Rack view.</li>
   <li>Navigate to the destination module, open its ports of the <strong>opposite</strong>
   type (if you started from an output, go to an input, and vice versa), and press
-  <kbd>Enter</kbd> again on the chosen port: the cable is created. The screen reader
-  announces "Connected: source module → destination module".</li>
+  <kbd>Enter</kbd> again on the chosen port: the cable is created. VoiceOver announces
+  "Connected: source module → destination module".</li>
 </ol>
 
 <p>To cancel a connection you started but did not complete, press <kbd>Esc</kbd>.</p>
 
 <h3>Disconnecting cables</h3>
-<p>In the Outputs or Inputs view, on the focused port, press <kbd>Del</kbd> or
-<kbd>Backspace</kbd>: every cable on that port is disconnected (undoable with
-<kbd>Ctrl</kbd>+<kbd>Z</kbd>).</p>
+<p>In the Outputs or Inputs view, on the focused port, press <kbd>Delete</kbd> or
+<kbd>Fn</kbd>+<kbd>Delete</kbd>: every cable on that port is disconnected (undoable with
+<kbd>Cmd</kbd>+<kbd>Z</kbd>).</p>
 
 <h2 id="selection">9. Multiple module selection</h2>
 
@@ -266,16 +270,16 @@ views, in two steps:</p>
 <table>
 <thead><tr><th>Key</th><th>Action</th></tr></thead>
 <tbody>
-<tr><td><kbd>Space</kbd></td><td>Adds or removes the focused module from the selection. The screen reader announces "selected" / "N modules selected".</td></tr>
-<tr><td><kbd>Shift</kbd>+<kbd>Backspace</kbd></td><td>Quickly clears the selection (deletes nothing).</td></tr>
-<tr><td><kbd>Del</kbd></td><td>Deletes all selected modules (with a "Delete N modules?" confirmation).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Randomizes the parameters of the selected modules.</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Adds or removes the focused module from the selection. VoiceOver announces "selected" / "N modules selected".</td></tr>
+<tr><td><kbd>Delete</kbd></td><td>Deletes all selected modules (with a "Delete N modules?" confirmation).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>R</kbd></td><td>Randomizes the parameters of the selected modules.</td></tr>
 </tbody>
 </table>
 
-<p>Selected modules stay marked in the list (the screen reader notes it as you
-scroll). The <em>Edit</em> menu also offers "Select all", "Deselect", and operations
-on the whole selection (Copy, Reset, Randomize, Disconnect, Bypass).</p>
+<p>Selected modules stay marked in the list (VoiceOver notes it as you scroll). The
+<em>Edit</em> menu also offers "Select all", "Deselect", and operations on the whole
+selection (Copy, Paste, Reset, Randomize, Disconnect, Bypass). To quickly clear the
+selection without deleting anything, use <em>Edit → Deselect</em>.</p>
 
 <h2 id="context">10. Module context menus</h2>
 
@@ -283,13 +287,13 @@ on the whole selection (Copy, Reset, Randomize, Disconnect, Bypass).</p>
 distinct kinds.</p>
 
 <h3>Generic context menu</h3>
-<p>On the focused module (in the Rack view), press the <kbd>Application key</kbd> or
-<kbd>Shift</kbd>+<kbd>F10</kbd>. A list opens with the actions common to all modules:
-<em>initialize</em>, <em>randomize</em>, <em>disconnect</em>, <em>bypass</em>
-(toggle), <em>duplicate</em> (with and without cables), <em>delete</em>.</p>
+<p>On the focused module (in the Rack view), press <kbd>Cmd</kbd>+<kbd>M</kbd>. A list
+opens with the actions common to all modules: <em>reset parameters</em>,
+<em>randomize parameters</em>, <em>disconnect cables</em>, <em>bypass</em> (toggle),
+<em>duplicate</em> (with and without cables), <em>delete</em>.</p>
 
 <h3>Module-specific context menu</h3>
-<p>Press <kbd>Ctrl</kbd>+<kbd>Application key</kbd> (from the Rack, Parameters,
+<p>Press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> (from the Rack, Parameters,
 Outputs or Inputs views). This opens the list of options <strong>specific</strong>
 to that module — the same ones that, in the graphical interface, appear at the
 bottom of its context menu. For example, on a MIDI-to-CV you find: polyphony channel
@@ -336,7 +340,7 @@ there:</p>
 <p>MetaRack can turn the computer keyboard into a small musical keyboard that sends
 MIDI notes, just like the original VCV Rack. Since the keyboard is normally used to
 navigate the interface, this feature is <strong>turned on and off</strong> with
-<kbd>Shift</kbd>+<kbd>K</kbd>: the screen reader announces "MIDI keyboard on" or
+<kbd>Shift</kbd>+<kbd>K</kbd>: VoiceOver announces "MIDI keyboard on" or
 "MIDI keyboard off".</p>
 
 <p>Before you can play, you must tell a MIDI module to listen to the computer
@@ -355,7 +359,7 @@ notes.</p>
   <li>The <kbd>backtick</kbd> (<kbd>`</kbd>) and <kbd>1</kbd> keys lower and raise the
   octave.</li>
   <li><strong>Navigation stays active:</strong> the arrows, <kbd>Tab</kbd>,
-  <kbd>Enter</kbd>, <kbd>Esc</kbd> and every <kbd>Ctrl</kbd> or <kbd>Shift</kbd>
+  <kbd>Enter</kbd>, <kbd>Esc</kbd> and every <kbd>Cmd</kbd> or <kbd>Shift</kbd>
   shortcut keep driving the interface as usual. Only the keys that produce a note are
   "captured" by the synthesizer.</li>
 </ul>
@@ -368,16 +372,21 @@ are released, so no sound gets stuck.</p>
 
 <h2 id="menubar">13. The menu bar</h2>
 
-<p>At the top of the window there is a native menu bar, identical to VCV Rack's. You
-open it with <kbd>Alt</kbd> and navigate it with the arrows — the screen reader reads
-item names, submenus and checkmarks natively.</p>
+<p>At the top of the screen there is the native macOS menu bar, identical to VCV
+Rack's (plus, at the start, the <strong>MetaRack</strong> application menu). With
+VoiceOver running, reach the menu bar with <kbd>VO</kbd>+<kbd>M</kbd> (that is,
+<kbd>Ctrl</kbd>+<kbd>Option</kbd>+<kbd>M</kbd>) and navigate it with the arrows —
+VoiceOver reads item names, submenus and checkmarks natively. The <kbd>Cmd</kbd>
+shortcuts (e.g. <kbd>Cmd</kbd>+<kbd>S</kbd> to save) work from any view without
+opening the bar.</p>
 
 <table>
 <thead><tr><th>Menu</th><th>Main contents</th></tr></thead>
 <tbody>
-<tr><td><strong>File</strong></td><td>New, Open, Open recent, Save, Save as, Save a copy, Revert, Overwrite template, Import selection, Quit.</td></tr>
-<tr><td><strong>Edit</strong></td><td>Undo, Redo, Disconnect all cables, and the selection actions (Select all, Deselect, Copy, Reset, Randomize, Disconnect, Bypass).</td></tr>
-<tr><td><strong>View</strong></td><td>Fullscreen, Zoom, Theme, Cable opacity and tension, Brightness, Knob mode, and various toggles (Tooltips, Lock cursor, Lock modules, etc.). Continuous settings are offered as submenus of preset values.</td></tr>
+<tr><td><strong>MetaRack</strong></td><td>VCVRack.com, Hide, Quit.</td></tr>
+<tr><td><strong>File</strong></td><td>New, Open, Open recent, Save, Save as, Save a copy, Revert, Overwrite template, Import selection.</td></tr>
+<tr><td><strong>Edit</strong></td><td>Undo, Redo, Disconnect all cables, and the selection actions (Select all, Deselect, Copy selection, Paste, Save selection, Reset, Randomize, Disconnect, Bypass).</td></tr>
+<tr><td><strong>View</strong></td><td>Fullscreen, Zoom, Theme, Pixel ratio, Cable opacity and tension, Brightness, Knob mode, and various toggles (Tooltips, Lock cursor, Lock modules, etc.). Continuous settings are offered as submenus of preset values.</td></tr>
 <tr><td><strong>Engine</strong></td><td>CPU meter, Sample rate (Auto, 44.1–192 kHz), thread count.</td></tr>
 <tr><td><strong>Library</strong></td><td>If you are not signed in: Register and Log in (with an Email/Password dialog). If you are signed in: Log out, Account, Browse, Update all.</td></tr>
 <tr><td><strong>Help</strong></td><td>Language (requires a restart), Tips, Manual, Support, User folder, Changelog, Check for updates.</td></tr>
@@ -398,16 +407,16 @@ it (the change requires restarting the program).</p>
 <tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Go to the Rack view (or refresh the list if already there).</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Go to the Library view.</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>K</kbd></td><td>Toggle the computer-keyboard MIDI mode (play notes with the keys; see section 12).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>New patch.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open patch.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></td><td>Revert to the saved file.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>Save as…</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Redo.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Randomize the selected modules.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit MetaRack.</td></tr>
-<tr><td><kbd>F1</kbd></td><td>Open the online VCV Rack manual in the browser.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>N</kbd></td><td>New patch.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>O</kbd></td><td>Open patch.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>S</kbd></td><td>Save.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>Save as…</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Z</kbd></td><td>Undo.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Redo.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>R</kbd></td><td>Randomize the selected modules.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>H</kbd></td><td>Hide the application.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Q</kbd></td><td>Quit MetaRack.</td></tr>
+<tr><td><kbd>VO</kbd>+<kbd>M</kbd></td><td>Go to the menu bar (VoiceOver: <kbd>Ctrl</kbd>+<kbd>Option</kbd>+<kbd>M</kbd>).</td></tr>
 <tr><td><kbd>Esc</kbd></td><td>Cancel a pending cable; or return to the Rack view.</td></tr>
 </tbody>
 </table>
@@ -419,16 +428,13 @@ it (the change requires restarting the program).</p>
 <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Move through modules in the row.</td></tr>
 <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Jump between rows.</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>Open the module's Parameters / insert on a free slot.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>Move the module to a new row.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Enter</kbd></td><td>Move the module to a new row.</td></tr>
 <tr><td><kbd>P</kbd> / <kbd>O</kbd> / <kbd>I</kbd></td><td>Go to the module's Parameters / Outputs / Inputs.</td></tr>
 <tr><td><kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
 <tr><td><kbd>Space</kbd></td><td>Add/remove the module from the multiple selection.</td></tr>
-<tr><td><kbd>Shift</kbd>+<kbd>Backspace</kbd></td><td>Clear the selection.</td></tr>
-<tr><td><kbd>Del</kbd> / <kbd>Backspace</kbd></td><td>Delete the module (or the whole selection).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copy / paste the module's preset.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>Duplicate without / with cables.</td></tr>
-<tr><td><kbd>Application key</kbd> / <kbd>Shift</kbd>+<kbd>F10</kbd></td><td>Generic context menu.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Application key</kbd></td><td>Module-specific context menu.</td></tr>
+<tr><td><kbd>Delete</kbd> / <kbd>Fn</kbd>+<kbd>Delete</kbd></td><td>Delete the module (or the whole selection).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Generic context menu.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
 </tbody>
 </table>
 
@@ -437,13 +443,15 @@ it (the change requires restarting the program).</p>
 <thead><tr><th>Key</th><th>Action</th></tr></thead>
 <tbody>
 <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Decrease / increase (normal step).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+ arrows</td><td>Fine step (×1/10).</td></tr>
+<tr><td><kbd>Cmd</kbd>+ arrows</td><td>Fine step (×1/10).</td></tr>
 <tr><td><kbd>Shift</kbd>+ arrows</td><td>Coarse step (×4).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+ arrows</td><td>Ultra-fine step (×1/100).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+ arrows</td><td>Ultra-fine step (×1/100).</td></tr>
 <tr><td><kbd>Space</kbd></td><td>Latching switch / momentary button.</td></tr>
-<tr><td><kbd>Backspace</kbd></td><td>Reset to default value.</td></tr>
+<tr><td><kbd>Delete</kbd></td><td>Reset to default value.</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>Open "Set value".</td></tr>
 <tr><td><kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Parameter context menu.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle between Parameters / Outputs / Inputs.</td></tr>
 </tbody>
 </table>
@@ -453,7 +461,8 @@ it (the change requires restarting the program).</p>
 <thead><tr><th>Key</th><th>Action</th></tr></thead>
 <tbody>
 <tr><td><kbd>Enter</kbd></td><td>Start a cable (first Enter) or complete it (second Enter on a compatible port).</td></tr>
-<tr><td><kbd>Del</kbd> / <kbd>Backspace</kbd></td><td>Disconnect the cables on the focused port.</td></tr>
+<tr><td><kbd>Delete</kbd> / <kbd>Fn</kbd>+<kbd>Delete</kbd></td><td>Disconnect the cables on the focused port.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle between Parameters / Outputs / Inputs.</td></tr>
 </tbody>
 </table>

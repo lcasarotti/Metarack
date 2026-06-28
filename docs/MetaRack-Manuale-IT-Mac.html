@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Manuale di MetaRack</title>
+<title>Manuale di MetaRack (macOS)</title>
 <style>
   body { font-family: Georgia, "Times New Roman", serif; line-height: 1.6;
          max-width: 60rem; margin: 0 auto; padding: 1.5rem; color: #1a1a1a; }
@@ -13,9 +13,9 @@
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
   th, td { border: 1px solid #999; padding: .4rem .6rem; text-align: left; vertical-align: top; }
   th { background: #eee; }
-  kbd { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
+  kbd { font-family: Menlo, Consolas, "Courier New", monospace; background: #f0f0f0;
         border: 1px solid #aaa; border-radius: 3px; padding: 0 .35rem; white-space: nowrap; }
-  code { font-family: Consolas, "Courier New", monospace; background: #f4f4f4; padding: 0 .25rem; }
+  code { font-family: Menlo, Consolas, "Courier New", monospace; background: #f4f4f4; padding: 0 .25rem; }
   nav { background: #f7f7f7; border: 1px solid #ccc; padding: .8rem 1.2rem; border-radius: 6px; }
   .lang-switch { font-size: .9rem; }
   .note { background: #eef6ff; border-left: 4px solid #3b82f6; padding: .5rem 1rem; margin: 1rem 0; }
@@ -23,22 +23,22 @@
 </head>
 <body>
 
-<p class="lang-switch"><a href="MetaRack-Manual-EN.html" lang="en">English version</a> ·
-<a href="MetaRack-Manuale-IT-Mac.html">Versione macOS</a></p>
+<p class="lang-switch"><a href="MetaRack-Manual-EN-Mac.html" lang="en">English version</a> ·
+<a href="MetaRack-Manuale-IT.html">Versione Windows</a></p>
 
-<h1>Manuale di MetaRack</h1>
+<h1>Manuale di MetaRack (macOS)</h1>
 
 <p>MetaRack è un sintetizzatore modulare software interamente accessibile da
-tastiera e compatibile con gli screen reader (su Windows: NVDA, Jaws, Narrator). È basato
+tastiera e compatibile con lo screen reader <strong>VoiceOver</strong> di macOS. È basato
 su VCV Rack: ogni operazione —
 aggiungere moduli, regolare parametri, collegare cavi — si fa senza mouse e con
-annunci vocali leggibili dallo screen reader.</p>
+annunci vocali leggibili da VoiceOver.</p>
 
 <div class="note">
-<p>Questo manuale descrive l'interfaccia accessibile di MetaRack. Per i dettagli
-sui singoli moduli, le espressioni numeriche e i concetti generali del sintetizzatore
-modulare, rimane valido il manuale online di VCV Rack, che puoi aprire in qualsiasi
-momento con <kbd>F1</kbd>.</p>
+<p>Questo manuale descrive l'interfaccia accessibile di MetaRack <strong>per macOS</strong>.
+Per i dettagli sui singoli moduli, le espressioni numeriche e i concetti generali del
+sintetizzatore modulare, rimane valido il manuale online di VCV Rack, che puoi aprire in
+qualsiasi momento dalla barra dei menù con <em>Aiuto → Manuale</em>.</p>
 </div>
 
 <nav aria-label="Indice">
@@ -69,29 +69,30 @@ tramite cavi, esattamente come in un sistema Eurorack fisico. L'interfaccia
 originale è puramente grafica e quindi inaccessibile con uno screen reader.</p>
 
 <p>MetaRack sostituisce l'interfaccia grafica con un'interfaccia composta di controlli
-nativi del sistema operativo (liste, alberi, barra dei menù), che lo screen reader
-è in grado di leggere e annunciare. La logica audio sottostante è identica a quella di VCV Rack:
+nativi di macOS (liste, alberi, barra dei menù), che VoiceOver è in grado di leggere e
+annunciare. La logica audio sottostante è identica a quella di VCV Rack:
 gli stessi moduli, gli stessi suoni, gli stessi file di patch.</p>
 
 <p>MetaRack condivide con VCV Rack la cartella utente, i plugin installati e
-l'accesso alla libreria online; le patch realizzate in MetaRack sono compatibili con VCV Rack,e viceversa. </p>
+l'accesso alla libreria online; le patch realizzate in MetaRack sono compatibili con VCV Rack, e viceversa.</p>
 
 <h2 id="avvio">2. Avvio e chiusura</h2>
 
 <h3>Avviare il programma</h3>
-<p>Avvia MetaRack come qualsiasi applicazione (dal menu Start o dall'icona).
-Non esiste alcuna finestra
-grafica separata da cercare: l'interfaccia accessibile <strong>è</strong> il
-programma.</p>
+<p>Avvia MetaRack come qualsiasi applicazione: dal Launchpad, dalla cartella
+<em>Applicazioni</em> o dal Dock. All'apertura la finestra accessibile «MetaRack»
+riceve subito il primo piano e il focus, e VoiceOver ne annuncia il titolo. Non esiste
+alcuna finestra grafica separata da cercare: l'interfaccia accessibile <strong>è</strong>
+il programma.</p>
 
 <h3>Chiudere il programma</h3>
-<p>Per uscire usa <kbd>Ctrl</kbd>+<kbd>Q</kbd>, oppure <kbd>Alt</kbd>+<kbd>F4</kbd>,
-oppure la voce <em>File → Esci</em>. Il lavoro corrente viene salvato automaticamente
+<p>Per uscire usa <kbd>Cmd</kbd>+<kbd>Q</kbd>, oppure la voce <em>MetaRack → Esci</em>
+nella barra dei menù. Il lavoro corrente viene salvato automaticamente
 (autosave), come in VCV Rack: alla riapertura ritrovi la patch al punto in cui l'avevi lasciata.</p>
 
 <div class="note">
 <p>Può girare una sola istanza alla volta. Se MetaRack è già aperto (o lo è
-VCV Rack , con cui condivide la cartella utente), un secondo avvio viene
+VCV Rack, con cui condivide la cartella utente), un secondo avvio viene
 rifiutato per non corrompere il salvataggio automatico.</p>
 </div>
 
@@ -141,7 +142,7 @@ su una o più file. MetaRack riproduce fedelmente questa disposizione come una
   <li>Puoi anche raggiungere un modulo digitando l'iniziale del nome.</li>
 </ul>
 
-<p>Per ogni elemento, lo screen reader annuncia il nome del modulo seguito dalla
+<p>Per ogni elemento, VoiceOver annuncia il nome del modulo seguito dalla
 sua posizione, nel formato «<em>— fila N, slot M</em>». La <strong>fila</strong> è
 la riga (a partire da 1); lo <strong>slot</strong> è la posizione progressiva del
 modulo in quella fila (a partire da 1). Questa numerazione è pensata per orientarsi,
@@ -157,19 +158,23 @@ punto dove inserire un nuovo modulo. Un rack vuoto contiene un solo slot libero.
 <tbody>
 <tr><td><kbd>Invio</kbd></td><td>su un modulo</td><td>Apre i Parametri del modulo.</td></tr>
 <tr><td><kbd>Invio</kbd></td><td>su uno slot libero</td><td>Se hai appena scelto un modulo dalla Libreria, lo inserisce qui; altrimenti apre la Libreria per sceglierne uno.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Invio</kbd></td><td>su un modulo</td><td>Sposta il modulo a fuoco su una <strong>fila nuova</strong> (la patch si estende in altezza).</td></tr>
-<tr><td><kbd>Canc</kbd> o <kbd>Backspace</kbd></td><td>su un modulo</td><td>Elimina il modulo (con richiesta di conferma). Se è attiva una selezione multipla, elimina tutta la selezione.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>su un modulo</td><td>Copia il preset del modulo negli appunti.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>su un modulo</td><td>Incolla sul modulo a fuoco il preset copiato (sovrascrive le impostazioni).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>su uno slot libero</td><td>Inserisce un <strong>nuovo</strong> modulo incollandolo dagli appunti, in coda alla fila.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>su un modulo</td><td>Duplica il modulo (senza i cavi).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>su un modulo</td><td>Duplica il modulo mantenendo i cavi.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Invio</kbd></td><td>su un modulo</td><td>Sposta il modulo a fuoco su una <strong>fila nuova</strong> (la patch si estende in altezza).</td></tr>
+<tr><td><kbd>Backspace</kbd> o <kbd>Fn</kbd>+<kbd>Backspace</kbd></td><td>su un modulo</td><td>Elimina il modulo (con richiesta di conferma). Se è attiva una selezione multipla, elimina tutta la selezione.</td></tr>
 </tbody>
 </table>
 
+<div class="note">
+<p><strong>Copiare e duplicare i moduli.</strong> Su macOS le operazioni di copia/incolla
+preset e di duplicazione non hanno scorciatoie a un solo modulo nella griglia: per
+<em>duplicare</em> un modulo (con o senza cavi) apri il suo menu contestuale con
+<kbd>Cmd</kbd>+<kbd>M</kbd> (vedi sezione 10); per <em>copiare e incollare</em> usa il
+menu <em>Modifica</em> della barra dei menù («Copia selezione», «Incolla»), che agisce
+sulla selezione corrente (vedi sezione 9).</p>
+</div>
+
 <h2 id="libreria">5. Aggiungere moduli dalla Libreria</h2>
 
-<p>Premi <kbd>Shift</kbd>+<kbd>L</kbd> per aprire la <strong>Libreria</strong>: la libreria è un
+<p>Premi <kbd>Shift</kbd>+<kbd>L</kbd> per aprire la <strong>Libreria</strong>: è un
 albero in cui il primo livello sono i plugin (i brand) e il secondo livello i
 singoli moduli che ciascuno offre.</p>
 
@@ -204,7 +209,7 @@ singoli moduli che ciascuno offre.</p>
   <li><strong>Ingressi</strong> — le porte di ingresso, con lo stesso tipo di stato.</li>
 </ul>
 
-<p>Scorri ogni elenco con <kbd>↑</kbd> e <kbd>↓</kbd>. Lo screen reader annuncia
+<p>Scorri ogni elenco con <kbd>↑</kbd> e <kbd>↓</kbd>. VoiceOver annuncia
 nome e valore (o stato) di ciascuna riga.</p>
 
 <h2 id="valori">7. Regolare i parametri</h2>
@@ -215,20 +220,20 @@ nome e valore (o stato) di ciascuna riga.</p>
 <thead><tr><th>Tasto</th><th>Azione</th></tr></thead>
 <tbody>
 <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Diminuisci / aumenta il valore di un passo normale (circa l'1% dell'intervallo tra valore minimo e valore massimo).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>→</kbd></td><td>Passo fine (un decimo del normale).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>←</kbd> / <kbd>Cmd</kbd>+<kbd>→</kbd></td><td>Passo fine (un decimo del normale).</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>Shift</kbd>+<kbd>→</kbd></td><td>Passo ampio (quattro volte il normale).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Passo finissimo (un centesimo del normale).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Passo finissimo (un centesimo del normale).</td></tr>
 <tr><td><kbd>Backspace</kbd></td><td>Riporta il parametro al suo valore predefinito.</td></tr>
 <tr><td><kbd>Invio</kbd></td><td>Apre la finestra «Imposta valore» per digitare un valore esatto.</td></tr>
 <tr><td><kbd>Spazio</kbd></td><td>Per gli interruttori a stati: cicla i valori. Per i pulsanti momentanei (es. Run di un sequencer): un colpo = un'attivazione.</td></tr>
-<tr><td><kbd>Tasto Applicazioni</kbd> o <kbd>Shift</kbd>+<kbd>F10</kbd></td><td>Apre il menu contestuale del parametro («Imposta valore…» e «Azzera al predefinito»).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Apre il menu contestuale del parametro («Imposta valore…» e «Azzera al predefinito»).</td></tr>
 </tbody>
 </table>
 
 <h3>La finestra «Imposta valore»</h3>
 <p>Premendo <kbd>Invio</kbd> si apre una finestra di dialogo che presenta un campo di testo già
 compilato con il valore attuale del parametro. Puoi digitare un numero oppure un'espressione tra quelle supportate da VCV Rack: nomi di nota, <code>log2</code>,
-<code>dbtogain</code>, <code>vtof</code>, ecc.). Conferma con <kbd>Invio</kbd>
+<code>dbtogain</code>, <code>vtof</code>, ecc. Conferma con <kbd>Invio</kbd>
 (OK) o annulla con <kbd>Esc</kbd>.</p>
 
 <div class="note">
@@ -253,15 +258,15 @@ in due passi:</p>
   <li>Naviga fino al modulo di destinazione, apri le sue porte del tipo
   <strong>opposto</strong> (se sei partito da un'uscita, vai su un ingresso, e
   viceversa) e premi di nuovo <kbd>Invio</kbd> sulla porta scelta: il cavo viene
-  creato. Lo screen reader annuncia «Connesso: modulo sorgente → modulo destinazione».</li>
+  creato. VoiceOver annuncia «Connesso: modulo sorgente → modulo destinazione».</li>
 </ol>
 
 <p>Per annullare una connessione iniziata ma non completata, premi <kbd>Esc</kbd>.</p>
 
 <h3>Scollegare i cavi</h3>
-<p>Nelle viste Uscite o Ingressi, sulla porta focalizzata, premi <kbd>Canc</kbd> o
-<kbd>Backspace</kbd>: tutti i cavi presenti su quella porta vengono scollegati
-(operazione annullabile con <kbd>Ctrl</kbd>+<kbd>Z</kbd>).</p>
+<p>Nelle viste Uscite o Ingressi, sulla porta focalizzata, premi <kbd>Backspace</kbd> o
+<kbd>Fn</kbd>+<kbd>Backspace</kbd>: tutti i cavi presenti su quella porta vengono scollegati
+(operazione annullabile con <kbd>Cmd</kbd>+<kbd>Z</kbd>).</p>
 
 <h2 id="selezione">9. Selezione multipla di moduli</h2>
 
@@ -270,31 +275,31 @@ in due passi:</p>
 <table>
 <thead><tr><th>Tasto</th><th>Azione</th></tr></thead>
 <tbody>
-<tr><td><kbd>Spazio</kbd></td><td>Aggiunge o toglie dalla selezione il modulo focalizzato. Lo screen reader annuncia «selezionato» / «N moduli selezionati».</td></tr>
-<tr><td><kbd>Shift</kbd>+<kbd>Backspace</kbd></td><td>Azzera rapidamente la selezione (non elimina nulla).</td></tr>
-<tr><td><kbd>Canc</kbd></td><td>Elimina tutti i moduli selezionati (con conferma «Eliminare N moduli?»).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Randomizza i parametri dei moduli selezionati.</td></tr>
+<tr><td><kbd>Spazio</kbd></td><td>Aggiunge o toglie dalla selezione il modulo focalizzato. VoiceOver annuncia «selezionato» / «N moduli selezionati».</td></tr>
+<tr><td><kbd>Backspace</kbd></td><td>Elimina tutti i moduli selezionati (con conferma «Eliminare N moduli?»).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>R</kbd></td><td>Randomizza i parametri dei moduli selezionati.</td></tr>
 </tbody>
 </table>
 
-<p>I moduli selezionati restano marcati nell'elenco (lo screen reader lo segnala
+<p>I moduli selezionati restano marcati nell'elenco (VoiceOver lo segnala
 scorrendo). Il menu <em>Modifica</em> offre anche «Seleziona tutto», «Deseleziona»,
-e operazioni sull'intera selezione (Copia, Reset, Randomizza, Scollega, Bypass).</p>
+e operazioni sull'intera selezione (Copia, Incolla, Azzera, Randomizza, Scollega, Bypass).
+Per azzerare rapidamente la selezione senza eliminare nulla usa <em>Modifica → Deseleziona</em>.</p>
 
 <h2 id="contestuali">10. Menu contestuali dei moduli</h2>
 
-<p>Ogni modulo offre comandi aggiuntivi tramite menu contestuali. MetaRack 
+<p>Ogni modulo offre comandi aggiuntivi tramite menu contestuali. MetaRack
 espone due tipi di menù contestuali.</p>
 
 <h3>Menu contestuale generico</h3>
-<p>Sul modulo a fuoco (in vista Rack), premi il <kbd>Tasto Applicazioni</kbd> o
-<kbd>Shift</kbd>+<kbd>F10</kbd>. Si apre un elenco con le azioni comuni a tutti i
-moduli: <em>azzera</em>, <em>randomizza</em>, <em>disconnetti</em>,
+<p>Sul modulo a fuoco (in vista Rack), premi <kbd>Cmd</kbd>+<kbd>M</kbd>.
+Si apre un elenco con le azioni comuni a tutti i
+moduli: <em>azzera parametri</em>, <em>randomizza parametri</em>, <em>disconnetti cavi</em>,
 <em>bypass</em> (attiva/disattiva), <em>duplica</em> (con e senza cavi),
 <em>elimina</em>.</p>
 
 <h3>Menu contestuale specifico del modulo</h3>
-<p>Premi <kbd>Ctrl</kbd>+<kbd>Tasto Applicazioni</kbd> (dalle viste Rack, Parametri,
+<p>Premi <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> (dalle viste Rack, Parametri,
 Uscite o Ingressi). Si apre l'elenco delle opzioni <strong>specifiche</strong> di
 quel modulo — le stesse che nell'interfaccia grafica appaiono in fondo al menu
 contestuale. Per esempio, nel modulo MIDI-to-CV trovi: numero di canali di polifonia,
@@ -342,8 +347,8 @@ corrente. Da lì:</p>
 <p>MetaRack può trasformare la tastiera del computer in una piccola tastiera
 musicale che invia note MIDI, proprio come il VCV Rack originale. Poiché la tastiera
 ci serve normalmente per navigare l'interfaccia, questa funzione si
-<strong>accende e si spegne</strong> con <kbd>Shift</kbd>+<kbd>K</kbd>: lo screen
-reader annuncia «Tastiera MIDI attivata» oppure «Tastiera MIDI disattivata».</p>
+<strong>accende e si spegne</strong> con <kbd>Shift</kbd>+<kbd>K</kbd>: VoiceOver
+annuncia «Tastiera MIDI attivata» oppure «Tastiera MIDI disattivata».</p>
 
 <p>Prima di suonare devi dire a un modulo MIDI di ascoltare la tastiera del computer.
 Aggiungi per esempio un modulo <strong>MIDI-CV</strong>, premi <kbd>D</kbd> per aprire
@@ -359,7 +364,7 @@ Collega poi l'uscita V/Oct (e Gate) del MIDI-CV a un oscillatore, così senti le
   un'ottava più in alto.</li>
   <li>Il <kbd>backtick</kbd> (<kbd>`</kbd>) e <kbd>1</kbd> abbassano e alzano l'ottava.</li>
   <li><strong>La navigazione resta attiva:</strong> le frecce, <kbd>Tab</kbd>,
-  <kbd>Invio</kbd>, <kbd>Esc</kbd> e tutte le scorciatoie con <kbd>Ctrl</kbd> o
+  <kbd>Invio</kbd>, <kbd>Esc</kbd> e tutte le scorciatoie con <kbd>Cmd</kbd> o
   <kbd>Shift</kbd> continuano a comandare l'interfaccia come sempre. Solo i tasti che
   producono una nota vengono «catturati» dal sintetizzatore.</li>
 </ul>
@@ -372,16 +377,21 @@ eventualmente ancora premute vengono rilasciate, così nessun suono resta blocca
 
 <h2 id="menubar">13. La barra dei menù</h2>
 
-<p>In cima alla finestra c'è una barra dei menù nativa, identica a quella di VCV
-Rack. La apri con <kbd>Alt</kbd> e la navighi con le frecce — lo screen reader
-legge nativamente i nomi delle voci, i sottomenù e i segni di spunta.</p>
+<p>In cima allo schermo c'è la barra dei menù nativa di macOS, identica a quella di VCV
+Rack (con in più, all'inizio, il menu dell'applicazione <strong>MetaRack</strong>).
+Con VoiceOver attivo raggiungi la barra dei menù con <kbd>VO</kbd>+<kbd>M</kbd>
+(cioè <kbd>Ctrl</kbd>+<kbd>Opzione</kbd>+<kbd>M</kbd>) e la navighi con le frecce —
+VoiceOver legge nativamente i nomi delle voci, i sottomenù e i segni di spunta. Le
+scorciatoie con <kbd>Cmd</kbd> (per esempio <kbd>Cmd</kbd>+<kbd>S</kbd> per salvare)
+funzionano da qualsiasi vista, senza aprire la barra.</p>
 
 <table>
 <thead><tr><th>Menu</th><th>Contenuto principale</th></tr></thead>
 <tbody>
-<tr><td><strong>File</strong></td><td>Nuovo, Apri, Apri recenti, Salva, Salva come, Salva copia, Ripristina, Sovrascrivi template, Importa selezione, Esci.</td></tr>
-<tr><td><strong>Modifica</strong></td><td>Annulla, Ripristina, Scollega tutti i cavi, e le azioni di selezione (Seleziona tutto, Deseleziona, Copia, Reset, Randomizza, Scollega, Bypass).</td></tr>
-<tr><td><strong>Vista</strong></td><td>Schermo intero, Zoom, Tema, Opacità e tensione dei cavi, Luminosità, Modalità manopole, e vari interruttori (Tooltip, Blocca cursore, Blocca moduli, ecc.). Le impostazioni continue sono offerte come sottomenù di valori predefiniti.</td></tr>
+<tr><td><strong>MetaRack</strong></td><td>VCVRack.com, Nascondi, Esci.</td></tr>
+<tr><td><strong>File</strong></td><td>Nuovo, Apri, Apri recenti, Salva, Salva come, Salva una copia, Ripristina, Sovrascrivi template, Importa selezione.</td></tr>
+<tr><td><strong>Modifica</strong></td><td>Annulla, Ripristina, Scollega tutti i cavi, e le azioni di selezione (Seleziona tutto, Deseleziona, Copia selezione, Incolla, Salva selezione, Azzera, Randomizza, Scollega, Bypass).</td></tr>
+<tr><td><strong>Vista</strong></td><td>Schermo intero, Zoom, Tema, Rapporto pixel, Opacità e tensione dei cavi, Luminosità, Modalità manopole, e vari interruttori (Tooltip, Blocca cursore, Blocca moduli, ecc.). Le impostazioni continue sono offerte come sottomenù di valori predefiniti.</td></tr>
 <tr><td><strong>Motore</strong></td><td>Indicatore CPU, Frequenza di campionamento (Auto, 44.1–192 kHz), numero di thread.</td></tr>
 <tr><td><strong>Libreria</strong></td><td>Se non hai effettuato l'accesso: Registrati e Accedi (con una finestra di dialogo Email/Password). Se hai effettuato l'accesso: Esci, Account, Sfoglia, Aggiorna tutto.</td></tr>
 <tr><td><strong>Aiuto</strong></td><td>Lingua (richiede il riavvio), Suggerimenti, Manuale, Supporto, Cartella utente, Changelog, Controlla aggiornamenti.</td></tr>
@@ -402,16 +412,16 @@ selezionandolo (il cambio richiede il riavvio del programma).</p>
 <tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Vai alla vista Rack (o aggiorna la vista se ci sei già).</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Vai alla vista Libreria.</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>K</kbd></td><td>Accendi/spegni la tastiera MIDI da computer (suona note con i tasti; vedi sezione 12).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>Nuova patch.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Apri patch.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></td><td>Ripristina dal file salvato.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Salva.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>Salva come…</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Annulla.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Ripristina (redo).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Randomizza i moduli selezionati.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Chiudi MetaRack.</td></tr>
-<tr><td><kbd>F1</kbd></td><td>Apri il manuale online di VCV Rack nel browser.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>N</kbd></td><td>Nuova patch.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>O</kbd></td><td>Apri patch.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>S</kbd></td><td>Salva.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>Salva come…</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Z</kbd></td><td>Annulla.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Ripristina (redo).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>R</kbd></td><td>Randomizza i moduli selezionati.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>H</kbd></td><td>Nascondi l'applicazione.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Q</kbd></td><td>Chiudi MetaRack.</td></tr>
+<tr><td><kbd>VO</kbd>+<kbd>M</kbd></td><td>Vai alla barra dei menù (VoiceOver: <kbd>Ctrl</kbd>+<kbd>Opzione</kbd>+<kbd>M</kbd>).</td></tr>
 <tr><td><kbd>Esc</kbd></td><td>Annulla un cavo in sospeso; oppure torna alla vista Rack.</td></tr>
 </tbody>
 </table>
@@ -423,16 +433,13 @@ selezionandolo (il cambio richiede il riavvio del programma).</p>
 <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Scorri i moduli nella fila.</td></tr>
 <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Salta tra le file.</td></tr>
 <tr><td><kbd>Invio</kbd></td><td>Apri i Parametri del modulo / inserisci sullo slot libero.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Invio</kbd></td><td>Sposta il modulo su una nuova fila.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Invio</kbd></td><td>Sposta il modulo su una nuova fila.</td></tr>
 <tr><td><kbd>P</kbd> / <kbd>O</kbd> / <kbd>I</kbd></td><td>Vai a Parametri / Uscite / Ingressi del modulo.</td></tr>
 <tr><td><kbd>D</kbd></td><td>Elenca i display cliccabili del modulo.</td></tr>
 <tr><td><kbd>Spazio</kbd></td><td>Aggiungi/togli il modulo dalla selezione multipla.</td></tr>
-<tr><td><kbd>Shift</kbd>+<kbd>Backspace</kbd></td><td>Azzera la selezione.</td></tr>
-<tr><td><kbd>Canc</kbd> / <kbd>Backspace</kbd></td><td>Elimina il modulo (o l'intera selezione).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copia / incolla il preset del modulo.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>Duplica senza / con cavi.</td></tr>
-<tr><td><kbd>Tasto Applicazioni</kbd> / <kbd>Shift</kbd>+<kbd>F10</kbd></td><td>Menu contestuale generico.</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Tasto Applicazioni</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
+<tr><td><kbd>Backspace</kbd> / <kbd>Fn</kbd>+<kbd>Backspace</kbd></td><td>Elimina il modulo (o l'intera selezione).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Menu contestuale generico.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
 </tbody>
 </table>
 
@@ -441,13 +448,15 @@ selezionandolo (il cambio richiede il riavvio del programma).</p>
 <thead><tr><th>Tasto</th><th>Azione</th></tr></thead>
 <tbody>
 <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Diminuisci / aumenta (passo normale).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+ frecce</td><td>Passo fine (×1/10).</td></tr>
+<tr><td><kbd>Cmd</kbd>+ frecce</td><td>Passo fine (×1/10).</td></tr>
 <tr><td><kbd>Shift</kbd>+ frecce</td><td>Passo ampio (×4).</td></tr>
-<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+ frecce</td><td>Passo finissimo (×1/100).</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+ frecce</td><td>Passo finissimo (×1/100).</td></tr>
 <tr><td><kbd>Spazio</kbd></td><td>Interruttore a stati / pulsante momentaneo.</td></tr>
 <tr><td><kbd>Backspace</kbd></td><td>Riporta al valore predefinito.</td></tr>
 <tr><td><kbd>Invio</kbd></td><td>Apri «Imposta valore».</td></tr>
 <tr><td><kbd>D</kbd></td><td>Elenca i display cliccabili del modulo.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Menu contestuale del parametro.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cicla tra Parametri / Uscite / Ingressi.</td></tr>
 </tbody>
 </table>
@@ -457,7 +466,8 @@ selezionandolo (il cambio richiede il riavvio del programma).</p>
 <thead><tr><th>Tasto</th><th>Azione</th></tr></thead>
 <tbody>
 <tr><td><kbd>Invio</kbd></td><td>Inizia un cavo (primo Invio) o completalo (secondo Invio su porta compatibile).</td></tr>
-<tr><td><kbd>Canc</kbd> / <kbd>Backspace</kbd></td><td>Scollega i cavi sulla porta a fuoco.</td></tr>
+<tr><td><kbd>Backspace</kbd> / <kbd>Fn</kbd>+<kbd>Backspace</kbd></td><td>Scollega i cavi sulla porta a fuoco.</td></tr>
+<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cicla tra Parametri / Uscite / Ingressi.</td></tr>
 </tbody>
 </table>
