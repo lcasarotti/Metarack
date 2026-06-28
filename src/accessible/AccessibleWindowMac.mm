@@ -847,7 +847,11 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 		// Always rebuild: cable state may have changed in the GUI or from a connection.
 		refreshPortView(self, isOutput);
 		[in->panel makeFirstResponder:t];
-		if ([t selectedRow] < 0 && [t numberOfRows] > 0)
+		// Always reset to the first row: the two port tables are shared across modules
+		// and an NSTableView keeps its selection across reloadData, so a stale index
+		// (e.g. row 1 from a previous visit) would otherwise focus the second port.
+		// Unlike PARAM/RACK we don't preserve selection here — the list is rebuilt live.
+		if ([t numberOfRows] > 0)
 			[t selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
 		// Announce the view name so Tab-cycling between PARAM/OUTPUT/INPUT keeps the user
 		// oriented. VoiceOver pronounces the selection-changed read before any announcement
