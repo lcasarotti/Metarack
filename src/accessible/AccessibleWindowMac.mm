@@ -882,12 +882,34 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 // ── Confirmation dialog (NSAlert) ────────────────────────────────────────────
 // Replaces the Win32 MessageBoxW yes/no prompts.
 static bool confirm(const std::string& msg) {
+	// Remember who was key (our panel) and where focus sat before the modal alert.
+	// When an app-modal NSAlert closes, AppKit hands key-window status back to the
+	// main GLFW rackWindow, not our child panel. On the "Yes" path refreshRackView
+	// re-asserts the panel afterwards, but on "No"/cancel nothing does — the panel
+	// shows the selection yet isn't key, so keystrokes hit the GLFW window and beep,
+	// and the VoiceOver cursor is left stranded in the main Rack window. Restore the
+	// previous key window and first responder for every outcome.
+	NSWindow* prevKey = [NSApp keyWindow];
+	NSResponder* prevResponder = prevKey ? [prevKey firstResponder] : nil;
+
 	NSAlert* a = [[NSAlert alloc] init];
 	[a setMessageText:[NSString stringWithUTF8String:msg.c_str()]];
 	[a addButtonWithTitle:[NSString stringWithUTF8String:L("Yes", "Sì").c_str()]];
 	[a addButtonWithTitle:[NSString stringWithUTF8String:L("No", "No").c_str()]];
 	NSModalResponse r = [a runModal];
 	[a release];
+
+	if (prevKey) {
+		[prevKey makeKeyWindow];
+		if ([prevResponder isKindOfClass:[NSView class]]) {
+			[prevKey makeFirstResponder:prevResponder];
+			// Selecting/asserting first responder alone doesn't move the VoiceOver
+			// cursor back; the selection-changed notification does (same trick the
+			// value-dialog and post-delete refresh paths use).
+			NSAccessibilityPostNotification((NSView*) prevResponder,
+			    NSAccessibilitySelectedRowsChangedNotification);
+		}
+	}
 	return r == NSAlertFirstButtonReturn;
 }
 
