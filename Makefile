@@ -1,6 +1,9 @@
 RACK_DIR ?= .
 RACK_EDITION := Free
 RACK_VERSION_MAJOR := 2
+# MetaRack's own product version, independent of the underlying Rack base version
+# (RACK_VERSION, e.g. 2.6.x). Mirrors METARACK_VERSION in installer.nsi on Windows.
+METARACK_VERSION := 1.0
 RACK_VERSION ?= $(patsubst v%,%,$(shell git describe --tags --match "v$(RACK_VERSION_MAJOR).*" 2>/dev/null))
 # This fork carries no v2.* git tags, so `git describe` returns nothing and RACK_VERSION
 # is empty. An empty APP_VERSION makes the built-in Core plugin fail to load with "No
@@ -251,15 +254,21 @@ endif
 
 # The following targets are not supported for public use
 
-DIST_NAME = Rack$(RACK_EDITION)-$(RACK_VERSION)-$(ARCH_NAME)
+DIST_NAME = MetaRack-$(METARACK_VERSION)-$(ARCH_NAME)
 ifdef ARCH_MAC
-	DIST_BUNDLE := VCV Rack $(RACK_VERSION_MAJOR) $(RACK_EDITION).app
+	DIST_BUNDLE := MetaRack.app
 else
-	DIST_DIR := Rack$(RACK_VERSION_MAJOR)$(RACK_EDITION)
+	DIST_DIR := MetaRack$(RACK_VERSION_MAJOR)
 endif
+# Code-signing identity for the macOS bundle. Defaults to "-" (ad-hoc), which is
+# enough to launch locally and is mandatory on Apple Silicon. Override with a real
+# "Developer ID Application: ..." identity to produce a distributable, notarizable app.
+CODESIGN_IDENTITY ?= -
 FUNDAMENTAL_VERSION ?= 2.6.4
 FUNDAMENTAL_FILENAME := Fundamental-$(FUNDAMENTAL_VERSION)-$(ARCH_NAME).vcvplugin
-DIST_MD := $(wildcard *.md)
+# Bundle the user-facing docs as HTML, but never the CLAUDE*.md dev/instruction
+# files (CLAUDE.local.md in particular is private and not committed).
+DIST_MD := $(filter-out CLAUDE.md CLAUDE.local.md, $(wildcard *.md))
 DIST_HTML := $(patsubst %.md, build/%.html, $(DIST_MD))
 DIST_RES := res cacert.pem Core.json template.vcv LICENSE-GPLv3.txt $(DIST_HTML) translations $(FUNDAMENTAL_FILENAME)
 DIST_SDK_DIR := Rack-SDK
@@ -294,14 +303,27 @@ ifdef ARCH_MAC
 	$(STRIP) -S dist/"$(DIST_BUNDLE)"/Contents/Resources/$(TARGET)
 	$(STRIP) -S dist/"$(DIST_BUNDLE)"/Contents/MacOS/$(STANDALONE_TARGET)
 	install_name_tool -change $(TARGET) @executable_path/../Resources/$(TARGET) dist/"$(DIST_BUNDLE)"/Contents/MacOS/$(STANDALONE_TARGET)
+	# VCV-library plugins record their libRack dependency as the absolute path
+	# /tmp/Rack2/libRack.dylib (the VCV build farm's build dir). Give our bundled
+	# libRack that exact install name so dyld matches it as the already-loaded image
+	# (by install name, not file path) and does NOT load a second copy. A duplicate
+	# copy splits GLFW's monitor state -> glfwGetPrimaryMonitor() returns NULL ->
+	# assertion abort at startup. This works on end-user machines with no /tmp/Rack2.
+	install_name_tool -id /tmp/Rack2/$(TARGET) dist/"$(DIST_BUNDLE)"/Contents/Resources/$(TARGET)
 	# Manually check that no nonstandard shared libraries are linked
 	otool -L dist/"$(DIST_BUNDLE)"/Contents/Resources/$(TARGET)
 	otool -L dist/"$(DIST_BUNDLE)"/Contents/MacOS/$(STANDALONE_TARGET)
 	# Copy resources
 	cp Info.plist dist/"$(DIST_BUNDLE)"/Contents/
 	$(SED) 's/{RACK_VERSION}/$(RACK_VERSION)/g' dist/"$(DIST_BUNDLE)"/Contents/Info.plist
+	$(SED) 's/{METARACK_VERSION}/$(METARACK_VERSION)/g' dist/"$(DIST_BUNDLE)"/Contents/Info.plist
 	cp -R icon.icns dist/"$(DIST_BUNDLE)"/Contents/Resources/
 	cp -R $(DIST_RES) dist/"$(DIST_BUNDLE)"/Contents/Resources/
+	# Ad-hoc sign so the bundle launches at all (mandatory on Apple Silicon). The
+	# secure-timestamp / hardened-runtime flags need a real identity, so they live
+	# in the package target; override CODESIGN_IDENTITY for a Developer ID build.
+	xattr -cr dist/"$(DIST_BUNDLE)"
+	codesign --force --sign "$(CODESIGN_IDENTITY)" --entitlements Entitlements.plist --deep dist/"$(DIST_BUNDLE)"
 endif
 ifdef ARCH_WIN
 	mkdir -p dist/"$(DIST_DIR)"
@@ -343,18 +365,27 @@ ifdef ARCH_LIN
 	cd dist && zip -q -9 -r $(DIST_NAME).zip "$(DIST_DIR)"
 endif
 ifdef ARCH_MAC
-	# Clean up and sign bundle
+ifneq ($(CODESIGN_IDENTITY),-)
+	# Real Developer ID build: re-sign with hardened runtime + secure timestamp so
+	# the app can be notarized. Set CODESIGN_IDENTITY="Developer ID Application: ..."
+	# and CODESIGN_IDENTITY_INSTALLER="Developer ID Installer: ...".
 	xattr -cr dist/"$(DIST_BUNDLE)"
-	codesign --verbose --sign "Developer ID Application: Andrew Belt (V8SW9J626X)" --options runtime --entitlements Entitlements.plist --timestamp --deep dist/"$(DIST_BUNDLE)"/Contents/Resources/$(TARGET) dist/"$(DIST_BUNDLE)"
+	codesign --force --verbose --sign "$(CODESIGN_IDENTITY)" --options runtime --entitlements Entitlements.plist --timestamp --deep dist/"$(DIST_BUNDLE)"/Contents/Resources/$(TARGET) dist/"$(DIST_BUNDLE)"
 	codesign --verify --deep --strict --verbose=2 dist/"$(DIST_BUNDLE)"
-	# Make standalone PKG
+endif
+	# Distributable ZIP of the app bundle. Works without a Developer ID: the bundle
+	# is already ad-hoc signed by `dist`, so it launches locally; recipients without
+	# a notarized build clear quarantine on first run (xattr -dr com.apple.quarantine).
+	cd dist && zip -q -9 -r --symlinks "$(DIST_NAME).zip" "$(DIST_BUNDLE)"
+	# Installer PKG (unsigned unless an installer identity is supplied below).
 	mkdir -p dist/Component
 	cp -R dist/"$(DIST_BUNDLE)" dist/Component/
-	pkgbuild --identifier com.vcvrack.rack2 --component-plist Component.plist --root dist/Component --install-location /Applications dist/Component.pkg
-	# Make PKG
+	pkgbuild --identifier com.lcasarotti.metarack --component-plist Component.plist --root dist/Component --install-location /Applications dist/Component.pkg
 	productbuild --distribution Distribution.xml --package-path dist dist/$(DIST_NAME).pkg
-	productsign --sign "Developer ID Installer: Andrew Belt (V8SW9J626X)" dist/$(DIST_NAME).pkg dist/$(DIST_NAME)-signed.pkg
+ifdef CODESIGN_IDENTITY_INSTALLER
+	productsign --sign "$(CODESIGN_IDENTITY_INSTALLER)" dist/$(DIST_NAME).pkg dist/$(DIST_NAME)-signed.pkg
 	mv dist/$(DIST_NAME)-signed.pkg dist/$(DIST_NAME).pkg
+endif
 endif
 ifdef ARCH_WIN
 	# Make NSIS installer

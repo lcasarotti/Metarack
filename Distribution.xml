@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-	<title>VCV Rack 2 Free</title>
+	<title>MetaRack</title>
 
 	<allowed-os-versions>
 		<os-version min="10.9"/>
@@ -10,11 +10,11 @@
 	<domains enable_localSystem="true" enable_currentUserHome="true"/>
 
 	<choices-outline>
-		<line choice="com.vcvrack.rack2"/>
+		<line choice="com.lcasarotti.metarack"/>
 	</choices-outline>
 
-	<choice id="com.vcvrack.rack2" title="Standalone" enabled="false">
-		<pkg-ref id="com.vcvrack.rack2"/>
+	<choice id="com.lcasarotti.metarack" title="Standalone" enabled="false">
+		<pkg-ref id="com.lcasarotti.metarack"/>
 	</choice>
-	<pkg-ref id="com.vcvrack.rack2" version="0" onConclusion="none">Component.pkg</pkg-ref>
+	<pkg-ref id="com.lcasarotti.metarack" version="0" onConclusion="none">Component.pkg</pkg-ref>
 </installer-gui-script>
