@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
 	<title>MetaRack</title>
+	<welcome file="welcome.rtf" mime-type="text/rtf"/>
 
 	<allowed-os-versions>
 		<os-version min="10.9"/>
