@@ -3,9 +3,9 @@
 <plist version="1.0">
 <array>
 	<dict>
-		<key>BundleHasStrictIdentifier</key><false/>
+		<key>BundleHasStrictIdentifier</key><true/>
 		<key>BundleIsVersionChecked</key><false/>
-		<key>BundleIsRelocatable</key><true/>
+		<key>BundleIsRelocatable</key><false/>
 		<key>BundleOverwriteAction</key><string>upgrade</string>
 		<key>RootRelativeBundlePath</key><string>MetaRack.app</string>
 	</dict>
