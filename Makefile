@@ -383,7 +383,7 @@ endif
 	mkdir -p dist/Component
 	cp -R dist/"$(DIST_BUNDLE)" dist/Component/
 	pkgbuild --identifier com.lcasarotti.metarack --component-plist Component.plist --root dist/Component --install-location /Applications dist/Component.pkg
-	productbuild --distribution Distribution.xml --resources installer-resources --package-path dist dist/$(DIST_NAME).pkg
+	productbuild --distribution Distribution.xml --package-path dist dist/$(DIST_NAME).pkg
 ifdef CODESIGN_IDENTITY_INSTALLER
 	productsign --sign "$(CODESIGN_IDENTITY_INSTALLER)" dist/$(DIST_NAME).pkg dist/$(DIST_NAME)-signed.pkg
 	mv dist/$(DIST_NAME)-signed.pkg dist/$(DIST_NAME).pkg
