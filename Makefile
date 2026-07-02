@@ -369,8 +369,10 @@ ifneq ($(CODESIGN_IDENTITY),-)
 	# Real Developer ID build: re-sign with hardened runtime + secure timestamp so
 	# the app can be notarized. Set CODESIGN_IDENTITY="Developer ID Application: ..."
 	# and CODESIGN_IDENTITY_INSTALLER="Developer ID Installer: ...".
+	# Uses Entitlements-release.plist (no get-task-allow): the notary service
+	# rejects binaries signed with the debug entitlement from Entitlements.plist.
 	xattr -cr dist/"$(DIST_BUNDLE)"
-	codesign --force --verbose --sign "$(CODESIGN_IDENTITY)" --options runtime --entitlements Entitlements.plist --timestamp --deep dist/"$(DIST_BUNDLE)"/Contents/Resources/$(TARGET) dist/"$(DIST_BUNDLE)"
+	codesign --force --verbose --sign "$(CODESIGN_IDENTITY)" --options runtime --entitlements Entitlements-release.plist --timestamp --deep dist/"$(DIST_BUNDLE)"/Contents/Resources/$(TARGET) dist/"$(DIST_BUNDLE)"
 	codesign --verify --deep --strict --verbose=2 dist/"$(DIST_BUNDLE)"
 endif
 	# Distributable ZIP of the app bundle. Works without a Developer ID: the bundle
@@ -409,8 +411,9 @@ endif
 
 notarize:
 ifdef ARCH_MAC
-	# Submit installer package to Apple
-	xcrun notarytool submit --keychain-profile "VCV" --wait dist/$(DIST_NAME).pkg
+	# Submit installer package to Apple. Register credentials once with:
+	# xcrun notarytool store-credentials "MetaRack" --apple-id <email> --team-id <TEAMID> --password <app-specific-password>
+	xcrun notarytool submit --keychain-profile "MetaRack" --wait dist/$(DIST_NAME).pkg
 	# Mark app as notarized
 	xcrun stapler staple dist/$(DIST_NAME).pkg
 	# Check notarization
