@@ -51,9 +51,12 @@
 #include <asset.hpp>
 #include <library.hpp>
 #include <keyboard.hpp>
+#include <tag.hpp>
+#include <FuzzySearchDatabase.hpp>
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <vector>
 #include <functional>
 #include <string>
@@ -231,6 +234,16 @@ struct AccessibleWindow::Internal {
 	// libraryLoaded flag; libraryRoots is an NSArray of AXLibNode* brands, retained.
 	NSMutableArray* libraryRoots  = nil;
 	bool            libraryLoaded = false;
+
+	// LIBRARY search / tag filter: three Tab-navigable panes (tree, search, tags). The
+	// tree is filtered live by a fuzzy search string and a selected tag, AND semantics.
+	// librarySelectedTag == -1 means "All modules" (no tag filter). libraryTagRows backs
+	// the tag list datasource: label + tag id, row 0 is always "All modules".
+	NSTextField* librarySearchField = nil;  // filters the tree live; Cmd+F focuses it
+	NSTableView* libraryTagTable    = nil;  // "All modules" + every Rack tag
+	std::string  librarySearch;
+	int          librarySelectedTag = -1;
+	std::vector<std::pair<std::string, int>> libraryTagRows;
 
 	// Mutations queued from Cocoa event handlers, run from drainCommands().
 	std::vector<std::function<void()>> commandQueue;
@@ -617,13 +630,93 @@ static void refreshRackView(AccessibleWindow* self,
 }
 
 // ── Library view ─────────────────────────────────────────────────────────────
-// Build the LIBRARY tree from plugin::plugins: one brand node per plugin, one model
-// node per visible model. Mirrors the Win32 refreshLibraryView (TreeView). The result
-// (libraryRoots) is read back by the NSOutlineView datasource on the controller.
-static void refreshLibraryView(AccessibleWindow* self) {
+
+// Fuzzy search index over every non-hidden model, built once on first library entry.
+// Mirrors browser::modelDbInit() in src/app/Browser.cpp (and the Win32 libraryDbInit):
+// it indexes brand, plugin name, model name, description and the model's tag aliases,
+// so typing "vco" or "reverb" (or a small typo) matches the right modules.
+static fuzzysearch::Database<plugin::Model*> g_libraryDb;
+static bool g_libraryDbBuilt = false;
+
+static void libraryDbInit() {
+	if (g_libraryDbBuilt)
+		return;
+	g_libraryDbBuilt = true;
+	g_libraryDb = fuzzysearch::Database<plugin::Model*>();
+	g_libraryDb.setWeights({0.9f, 0.75f, 1.0f, 0.8f, 0.9f});
+	g_libraryDb.setThreshold(0.5f);
+	for (plugin::Plugin* plug : plugin::plugins) {
+		if (!plug)
+			continue;
+		for (plugin::Model* model : plug->models) {
+			if (!model || model->hidden)
+				continue;
+			std::string tagStr;
+			for (int tagId : model->tagIds) {
+				if (settings::language != "en") {
+					tagStr += string::translate("tag." + tag::getTag(tagId), settings::language);
+					tagStr += " ";
+				}
+				for (const std::string& tagAlias : tag::tagAliases[tagId]) {
+					tagStr += tagAlias;
+					tagStr += " ";
+				}
+			}
+			std::vector<std::string> fields = {
+				plug->getBrand(),
+				plug->name,
+				model->name,
+				model->description,
+				tagStr,
+			};
+			g_libraryDb.addEntry(model, fields);
+		}
+	}
+}
+
+// Populate the tag filter list once: row 0 "All modules" (tag id -1, no filter), then
+// every Rack tag sorted by its localized display name. Mirrors the Win32 buildTagList.
+static void buildTagList(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	in->libraryTagRows.clear();
+	in->libraryTagRows.push_back({L("All modules", "Tutti i moduli"), -1});
+
+	std::vector<std::pair<std::string, int>> tags;
+	int n = (int) tag::tagAliases.size();
+	for (int i = 0; i < n; i++)
+		tags.push_back({string::translate("tag." + tag::getTag(i)), i});
+	std::sort(tags.begin(), tags.end(),
+	[](const std::pair<std::string, int>& a, const std::pair<std::string, int>& b) {
+		return a.first < b.first;
+	});
+	for (auto& t : tags)
+		in->libraryTagRows.push_back(t);
+
+	[in->libraryTagTable reloadData];
+	// Default selection = "All modules" (harmless: the table isn't focused yet, and the
+	// selection-changed handler skips the rebuild since librarySelectedTag is already -1).
+	[in->libraryTagTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+}
+
+// Build the LIBRARY tree from plugin::plugins applying the active fuzzy-search string
+// and the selected tag (both must pass — AND semantics, mirroring the native browser and
+// the Win32 rebuildLibraryTree). One brand node per plugin (brands merged), one model
+// node per surviving model. The result (libraryRoots) is read back by the NSOutlineView
+// datasource on the controller.
+static void rebuildLibraryTree(AccessibleWindow* self) {
 	AccessibleWindow::Internal* in = self->internal;
 
-	// Group models by brand name, merging plugins that share the same brand.
+	// Fuzzy-search prefilter: only models returned by the search are eligible.
+	bool useSearch = !in->librarySearch.empty();
+	std::set<plugin::Model*> matched;
+	if (useSearch) {
+		auto results = g_libraryDb.search(in->librarySearch);
+		for (auto& r : results)
+			matched.insert(r.key);
+	}
+	bool filtering = useSearch || in->librarySelectedTag >= 0;
+
+	// Group surviving models by brand name, merging plugins that share the same brand.
 	// std::map keeps brands in alphabetical order automatically.
 	std::map<std::string, std::vector<plugin::Model*>> byBrand;
 	for (plugin::Plugin* plug : plugin::plugins) {
@@ -632,11 +725,21 @@ static void refreshLibraryView(AccessibleWindow* self) {
 		for (plugin::Model* model : plug->models) {
 			if (!model || model->hidden)
 				continue;
+			if (useSearch && matched.find(model) == matched.end())
+				continue;
+			if (in->librarySelectedTag >= 0) {
+				bool hasTag = false;
+				for (int t : model->tagIds)
+					if (t == in->librarySelectedTag) { hasTag = true; break; }
+				if (!hasTag)
+					continue;
+			}
 			byBrand[plug->getBrand()].push_back(model);
 		}
 	}
 
 	NSMutableArray* roots = [[NSMutableArray alloc] init];
+	int count = 0;
 	for (auto& kv : byBrand) {
 		// Sort models alphabetically within each brand.
 		std::sort(kv.second.begin(), kv.second.end(), [](plugin::Model* a, plugin::Model* b) {
@@ -653,6 +756,7 @@ static void refreshLibraryView(AccessibleWindow* self) {
 			node->children = nil;
 			[brand->children addObject:node];
 			[node release];
+			count++;
 		}
 		[roots addObject:brand];
 		[brand release];
@@ -662,6 +766,46 @@ static void refreshLibraryView(AccessibleWindow* self) {
 		[in->libraryRoots release];
 	in->libraryRoots = roots; // retained
 	[in->libraryOutline reloadData];
+
+	// With a filter active, expand each brand so the (few) matches are immediately
+	// reachable; unfiltered, keep the tree collapsed.
+	if (filtering) {
+		for (AXLibNode* brand in in->libraryRoots)
+			[in->libraryOutline expandItem:brand];
+	}
+
+	// Update the status bar silently (no forced VoiceOver speech): the count would be
+	// far too chatty spoken on every keystroke. VoiceOver users can read it on demand.
+	if (in->statusLabel) {
+		std::string status = std::to_string(count) + L(" modules", " moduli");
+		[in->statusLabel setStringValue:nsstr(status)];
+	}
+}
+
+// Move focus to one of the three LIBRARY panes (tree / search / tags), selecting the
+// tree's first row when landing on it with no existing selection. Mirrors the Win32
+// focusLibraryPane.
+static void focusLibraryPane(AccessibleWindow* self, NSView* pane) {
+	AccessibleWindow::Internal* in = self->internal;
+	[in->panel makeFirstResponder:pane];
+	if (pane == in->libraryOutline && [in->libraryOutline selectedRow] < 0
+	    && [in->libraryOutline numberOfRows] > 0) {
+		[in->libraryOutline selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
+		                     byExtendingSelection:NO];
+	}
+}
+
+// Tab cycles tree → search → tags (Shift+Tab reverses), matching the Win32 layer's
+// three-pane LIBRARY navigation.
+static void cycleLibraryPane(AccessibleWindow* self, NSView* current, bool shift) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSView* panes[3] = { in->libraryOutline, in->librarySearchField, in->libraryTagTable };
+	int cur = 0;
+	for (int i = 0; i < 3; i++)
+		if (panes[i] == current)
+			cur = i;
+	int next = shift ? (cur + 2) % 3 : (cur + 1) % 3;
+	focusLibraryPane(self, panes[next]);
 }
 
 // Pixel top-left of a grid cell, mirroring ModuleWidget::setGridPosition() — the same
@@ -776,6 +920,8 @@ static std::string axViewName(AXView v) {
 static void hideAllViews(AccessibleWindow::Internal* in) {
 	[[in->rackTable enclosingScrollView] setHidden:YES];
 	[[in->libraryOutline enclosingScrollView] setHidden:YES];
+	[in->librarySearchField setHidden:YES];
+	[[in->libraryTagTable enclosingScrollView] setHidden:YES];
 	[[in->paramTable enclosingScrollView] setHidden:YES];
 	[[in->outputTable enclosingScrollView] setHidden:YES];
 	[[in->inputTable enclosingScrollView] setHidden:YES];
@@ -806,8 +952,12 @@ static void switchTo(AccessibleWindow* self, AXView v) {
 		in->currentView = AX_LIBRARY;
 		hideAllViews(in);
 		[[in->libraryOutline enclosingScrollView] setHidden:NO];
+		[in->librarySearchField setHidden:NO];
+		[[in->libraryTagTable enclosingScrollView] setHidden:NO];
 		if (!in->libraryLoaded) {
-			refreshLibraryView(self);
+			libraryDbInit();
+			buildTagList(self);
+			rebuildLibraryTree(self);
 			in->libraryLoaded = true;
 		}
 		[in->panel makeFirstResponder:in->libraryOutline];
@@ -1994,7 +2144,8 @@ static void showLayer(AccessibleWindow* self) {
 // Datasource/delegate for both the RACK table and the LIBRARY outline. Reads rows
 // straight from the C++ state (rackRows) and the AXLibNode tree (libraryRoots).
 @interface RackAXController : NSObject <NSTableViewDataSource, NSTableViewDelegate,
-                                        NSOutlineViewDataSource, NSOutlineViewDelegate> {
+                                        NSOutlineViewDataSource, NSOutlineViewDelegate,
+                                        NSTextFieldDelegate> {
 @public
 	rack::accessible::AccessibleWindow* owner;
 }
@@ -2013,6 +2164,8 @@ static void showLayer(AccessibleWindow* self) {
 		return in->currentModule ? in->currentModule->getNumInputs() : 0;
 	if (tv == in->contextTable)
 		return (NSInteger) in->contextItems.size();
+	if (tv == in->libraryTagTable)
+		return (NSInteger) in->libraryTagRows.size();
 	return (NSInteger) in->rackRows.size();
 }
 - (id)tableView:(NSTableView*)tv objectValueForTableColumn:(NSTableColumn*)col row:(NSInteger)row {
@@ -2070,6 +2223,13 @@ static void showLayer(AccessibleWindow* self) {
 		return [NSString stringWithUTF8String:in->contextItems[row].label.c_str()];
 	}
 
+	// LIBRARY tag filter table: single column of tag labels ("All modules" + tags).
+	if (tv == in->libraryTagTable) {
+		if (row < 0 || row >= (NSInteger) in->libraryTagRows.size())
+			return @"";
+		return [NSString stringWithUTF8String:in->libraryTagRows[row].first.c_str()];
+	}
+
 	auto& rows = in->rackRows;
 	if (row < 0 || row >= (NSInteger) rows.size())
 		return @"";
@@ -2101,6 +2261,59 @@ static void showLayer(AccessibleWindow* self) {
 - (id)outlineView:(NSOutlineView*)ov objectValueForTableColumn:(NSTableColumn*)col byItem:(id)item {
 	AXLibNode* n = (AXLibNode*) item;
 	return n ? n->label : @"";
+}
+
+// ── LIBRARY search field: refilter the tree live as the user types ──────────────────
+- (void)controlTextDidChange:(NSNotification*)note {
+	if (!owner || !owner->internal)
+		return;
+	if ([note object] != owner->internal->librarySearchField)
+		return;
+	const char* s = [[owner->internal->librarySearchField stringValue] UTF8String];
+	owner->internal->librarySearch = s ? s : "";
+	rack::accessible::rebuildLibraryTree(owner);
+}
+
+// LIBRARY search field navigation: Down/Return jumps to the tree, Escape returns to
+// RACK, Tab/Shift+Tab cycle to the tags/tree pane. Everything else edits normally — the
+// Cocoa equivalent of the Win32 search edit's "typing sanctuary".
+- (BOOL)control:(NSControl*)control textView:(NSTextView*)textView doCommandBySelector:(SEL)sel {
+	using namespace rack::accessible;
+	if (!owner || !owner->internal || control != owner->internal->librarySearchField)
+		return NO;
+	if (sel == @selector(moveDown:) || sel == @selector(insertNewline:)) {
+		focusLibraryPane(owner, owner->internal->libraryOutline);
+		return YES;
+	}
+	if (sel == @selector(cancelOperation:)) {
+		switchTo(owner, AX_RACK);
+		return YES;
+	}
+	if (sel == @selector(insertTab:)) {
+		cycleLibraryPane(owner, owner->internal->librarySearchField, false);
+		return YES;
+	}
+	if (sel == @selector(insertBacktab:)) {
+		cycleLibraryPane(owner, owner->internal->librarySearchField, true);
+		return YES;
+	}
+	return NO;
+}
+
+// ── LIBRARY tag filter: selecting a row applies its tag to the tree ─────────────────
+- (void)tableViewSelectionDidChange:(NSNotification*)note {
+	if (!owner || !owner->internal)
+		return;
+	if ([note object] != owner->internal->libraryTagTable)
+		return;
+	NSInteger row = [owner->internal->libraryTagTable selectedRow];
+	if (row < 0 || row >= (NSInteger) owner->internal->libraryTagRows.size())
+		return;
+	int tagId = owner->internal->libraryTagRows[row].second;
+	if (tagId == owner->internal->librarySelectedTag)
+		return;
+	owner->internal->librarySelectedTag = tagId;
+	rack::accessible::rebuildLibraryTree(owner);
 }
 @end
 
@@ -2387,6 +2600,53 @@ static void showLayer(AccessibleWindow* self) {
 		switchTo(owner, AX_RACK);
 		return;
 	}
+	if (kc == 48) {   // Tab / Shift+Tab → cycle the LIBRARY panes (tree → search → tags)
+		cycleLibraryPane(owner, owner->internal->libraryOutline, shift);
+		return;
+	}
+	[super keyDown:e];
+}
+@end
+
+// NSTableView for the LIBRARY tag filter list ("All modules" + every Rack tag). Up/Down
+// navigate and select natively (the controller's tableViewSelectionDidChange: applies the
+// filter); we only intercept Enter (jump to the tree), Escape and Tab. Mirrors the Win32
+// listTags subclass handling.
+@interface RackAXTagTableView : NSTableView {
+@public
+	rack::accessible::AccessibleWindow* owner;
+}
+@end
+
+@implementation RackAXTagTableView
+- (void)keyDown:(NSEvent*)e {
+	using namespace rack::accessible;
+	if (!owner || !owner->internal) {
+		[super keyDown:e];
+		return;
+	}
+	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+	if (m & NSEventModifierFlagCommand) {   // Cmd-combos belong to the menu bar
+		[super keyDown:e];
+		return;
+	}
+	unsigned short kc = e.keyCode;
+	bool shift = (m & NSEventModifierFlagShift) != 0;
+
+	if (kc == 36 || kc == 76) {              // Return / keypad Enter → jump to the tree
+		focusLibraryPane(owner, owner->internal->libraryOutline);
+		return;
+	}
+	if (kc == 53) {                          // Escape → back to RACK
+		if (cancelPendingCable(owner))
+			return;
+		switchTo(owner, AX_RACK);
+		return;
+	}
+	if (kc == 48) {                          // Tab / Shift+Tab → cycle the LIBRARY panes
+		cycleLibraryPane(owner, owner->internal->libraryTagTable, shift);
+		return;
+	}
 	[super keyDown:e];
 }
 @end
@@ -2652,6 +2912,18 @@ static void buildMenuBar(AccessibleWindow* self) {
 			if (APP->history->canRedo()) { APP->history->redo(); reloadRackAfterMutation(self); }
 		});
 	}, nullptr, @"z", NSEventModifierFlagCommand | NSEventModifierFlagShift);
+	axSep(edit);
+	addCmd(self, edit, L("Find in Library", "Trova nella libreria"), [self]() {
+		// Ableton-style: open the library and jump straight to the search field,
+		// selecting any existing text so a new query replaces it. Works from any view
+		// (a real NSMenuItem key equivalent reaches the field editor too).
+		switchTo(self, AX_LIBRARY);
+		[self->internal->panel makeFirstResponder:self->internal->librarySearchField];
+		id editor = [self->internal->panel firstResponder];
+		if ([editor isKindOfClass:[NSText class]])
+			[(NSText*) editor selectAll:nil];
+	}, nullptr, @"f");
+	axSep(edit);
 	addCmd(self, edit, L("Disconnect all cables", "Scollega tutti i cavi"), [self]() {
 		pushCommand(self, []() { APP->patch->disconnectDialog(); });
 	});
@@ -2919,14 +3191,27 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	[scroll release];
 	self->internal->rackTable = table;
 
-	// LIBRARY outline, same geometry as the RACK table but hidden until switched to.
-	NSScrollView* libScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	// LIBRARY is a three-pane view stacked in the RACK table's band: the tree on top
+	// (flexible height), the search field below it (one line), the tag filter list at
+	// the bottom (fixed height, clamped so the tree keeps at least half the band on
+	// short windows). All hidden until switched to. Mirrors the Win32 onSize/switchView
+	// stacking added for fuzzy search + tag filter.
+	CGFloat searchH = 24;
+	CGFloat tagsH = 170;
+	if (tagsH > (h - 22) / 2)
+		tagsH = (h - 22) / 2;
+	CGFloat treeH = (h - 22) - searchH - tagsH;
+	if (treeH < 0)
+		treeH = 0;
+
+	NSScrollView* libScroll = [[NSScrollView alloc]
+	    initWithFrame:NSMakeRect(0, 22 + searchH + tagsH, w, treeH)];
 	[libScroll setHasVerticalScroller:YES];
 	[libScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 	[libScroll setHidden:YES];
 
 	RackAXOutlineView* outline = [[RackAXOutlineView alloc]
-	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	    initWithFrame:NSMakeRect(0, 0, w, treeH)];
 	outline->owner = self;
 	NSTableColumn* lcol = [[NSTableColumn alloc] initWithIdentifier:@"lib"];
 	[lcol setWidth:w > 80 ? w - 40 : 800];
@@ -2944,6 +3229,46 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	[content addSubview:libScroll];
 	[libScroll release];
 	self->internal->libraryOutline = outline;
+
+	// LIBRARY search field (single line). Filters the tree via fuzzy search as the user
+	// types (-controlTextDidChange: on the controller); Edit > Find in Library (Cmd+F)
+	// focuses it and selects any existing text, from any view.
+	NSTextField* searchField = [[NSTextField alloc]
+	    initWithFrame:NSMakeRect(0, 22 + tagsH, w, searchH)];
+	[[searchField cell] setPlaceholderString:nsstr(L("Search modules…", "Cerca moduli…"))];
+	[searchField setAutoresizingMask:(NSViewWidthSizable | NSViewMaxYMargin)];
+	[searchField setHidden:YES];
+	[searchField setDelegate:controller];
+	[content addSubview:searchField];
+	[searchField release];
+	self->internal->librarySearchField = searchField;
+
+	// LIBRARY tag filter list — single-column table: row 0 is "All modules" (no
+	// filter), then every Rack tag. Selecting a row filters the tree (AND'd with search).
+	NSScrollView* tagScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, tagsH)];
+	[tagScroll setHasVerticalScroller:YES];
+	[tagScroll setAutoresizingMask:(NSViewWidthSizable | NSViewMaxYMargin)];
+	[tagScroll setHidden:YES];
+
+	RackAXTagTableView* tagTable = [[RackAXTagTableView alloc]
+	    initWithFrame:NSMakeRect(0, 0, w, tagsH)];
+	tagTable->owner = self;
+	NSTableColumn* tagCol = [[NSTableColumn alloc] initWithIdentifier:@"tag"];
+	[tagCol setWidth:w > 80 ? w - 40 : 800];
+	[tagCol setEditable:NO];
+	[tagTable addTableColumn:tagCol];
+	[tagCol release];
+	[tagTable setHeaderView:nil];
+	[tagTable setAllowsMultipleSelection:NO];
+	[tagTable setAllowsEmptySelection:YES];
+	[tagTable setColumnAutoresizingStyle:NSTableViewUniformColumnAutoresizingStyle];
+	[tagTable setDataSource:controller];
+	[tagTable setDelegate:controller];
+	[tagScroll setDocumentView:tagTable];
+	[tagTable release];
+	[content addSubview:tagScroll];
+	[tagScroll release];
+	self->internal->libraryTagTable = tagTable;
 
 	// PARAM table: two columns (name, value), same geometry, hidden until switched to.
 	NSScrollView* paramScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
@@ -3058,13 +3383,14 @@ AccessibleWindow::~AccessibleWindow() {
 		// severs that path. Messaging nil is a no-op, so unset views are harmless.
 		NSTableView* dataViews[] = { internal->rackTable, internal->paramTable,
 		                             internal->outputTable, internal->inputTable,
-		                             internal->contextTable };
+		                             internal->contextTable, internal->libraryTagTable };
 		for (NSTableView* v : dataViews) {
 			[v setDataSource:nil];
 			[v setDelegate:nil];
 		}
 		[internal->libraryOutline setDataSource:nil];
 		[internal->libraryOutline setDelegate:nil];
+		[internal->librarySearchField setDelegate:nil];
 		if (internal->controller)
 			((RackAXController*) internal->controller)->owner = nullptr;
 
