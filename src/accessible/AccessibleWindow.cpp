@@ -35,6 +35,8 @@
 #include <settings.hpp>
 #include <library.hpp>
 #include <asset.hpp>
+#include <tag.hpp>
+#include <FuzzySearchDatabase.hpp>
 #include <string.hpp>
 #include <window/Window.hpp>
 #include <keyboard.hpp>
@@ -48,6 +50,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include <thread>
@@ -115,6 +118,51 @@ static const int ID_PARAM        = 103;
 static const int ID_OUTPUT       = 104;
 static const int ID_INPUT        = 105;
 static const int ID_CONTEXT_MENU = 106;
+static const int ID_SEARCH       = 107;   // library search edit
+static const int ID_TAGS         = 108;   // library tag filter list
+
+// Fuzzy search index over every non-hidden model, built once on first library
+// entry. Mirrors browser::modelDbInit() in src/app/Browser.cpp: it indexes brand,
+// plugin name, model name, description and the model's tag aliases, so typing
+// "vco" or "reverb" (or a small typo) matches the right modules.
+static fuzzysearch::Database<plugin::Model*> g_libraryDb;
+static bool g_libraryDbBuilt = false;
+
+static void libraryDbInit() {
+	if (g_libraryDbBuilt)
+		return;
+	g_libraryDbBuilt = true;
+	g_libraryDb = fuzzysearch::Database<plugin::Model*>();
+	g_libraryDb.setWeights({0.9f, 0.75f, 1.0f, 0.8f, 0.9f});
+	g_libraryDb.setThreshold(0.5f);
+	for (plugin::Plugin* plug : plugin::plugins) {
+		if (!plug)
+			continue;
+		for (plugin::Model* model : plug->models) {
+			if (!model || model->hidden)
+				continue;
+			std::string tagStr;
+			for (int tagId : model->tagIds) {
+				if (settings::language != "en") {
+					tagStr += string::translate("tag." + tag::getTag(tagId), settings::language);
+					tagStr += " ";
+				}
+				for (const std::string& tagAlias : tag::tagAliases[tagId]) {
+					tagStr += tagAlias;
+					tagStr += " ";
+				}
+			}
+			std::vector<std::string> fields = {
+				model->plugin->brand,
+				model->plugin->name,
+				model->name,
+				model->description,
+				tagStr,
+			};
+			g_libraryDb.addEntry(model, fields);
+		}
+	}
+}
 
 // Menu-bar command ids start here so they never collide with the control ids
 // above (101–106) or the status bar (999).
@@ -349,6 +397,15 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 				self->onMomentaryRelease();
 			return 0;
 		case WM_COMMAND:
+			// Library search edit changed: refilter the tree live. The tree isn't
+			// focused while typing, so rebuilding it doesn't flood NVDA.
+			if (self && HIWORD(wp) == EN_CHANGE && LOWORD(wp) == ID_SEARCH) {
+				wchar_t buf[256] = {};
+				GetWindowTextW(self->searchLibrary, buf, 256);
+				self->librarySearch = toUtf8(buf);
+				self->rebuildLibraryTree();
+				return 0;
+			}
 			// Menu-bar selection. The lambda decides whether to run inline or defer
 			// itself via pushCommand() (tree/engine/window mutations must defer).
 			if (self && HIWORD(wp) == 0) {
@@ -393,8 +450,18 @@ LRESULT CALLBACK AccessibleWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 		case WM_DESTROY:
 			KillTimer(hwnd, TIMER_ID);
 			return 0;
-		case WM_NOTIFY:
+		case WM_NOTIFY: {
+			// Tag list selection changed: apply the new tag filter to the tree.
+			LPNMHDR nh = (LPNMHDR)lp;
+			if (self && nh && nh->idFrom == ID_TAGS && nh->code == LVN_ITEMCHANGED) {
+				NMLISTVIEW* nlv = (NMLISTVIEW*)lp;
+				if ((nlv->uNewState & LVIS_SELECTED) && !(nlv->uOldState & LVIS_SELECTED)) {
+					self->librarySelectedTag = (int)lvGetParam(self->listTags, nlv->iItem);
+					self->rebuildLibraryTree();
+				}
+			}
 			return DefWindowProcW(hwnd, msg, wp, lp);
+		}
 	}
 	return DefWindowProcW(hwnd, msg, wp, lp);
 }
@@ -445,12 +512,30 @@ void AccessibleWindow::onCreate() {
 	                           0, 0, w, listH,
 	                           hwnd, (HMENU)(INT_PTR)ID_RACK, hInst, nullptr);
 
-	// Library TreeView
+	// Library TreeView. Together with the search edit and the tag list below it
+	// forms the three-pane LIBRARY view; onSize() stacks them and switchView()
+	// shows/hides them as a group.
 	treeLibrary = CreateWindowExW(0, WC_TREEVIEWW, L"",
 	                              WS_CHILD | WS_BORDER | WS_TABSTOP |
 	                              TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS | TVS_SHOWSELALWAYS,
 	                              0, 0, w, listH,
 	                              hwnd, (HMENU)(INT_PTR)ID_LIBRARY, hInst, nullptr);
+
+	// Library search edit (single line). Filters the tree via fuzzy search as the
+	// user types (EN_CHANGE in WndProc). Ctrl+F focuses it from any view.
+	searchLibrary = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+	                                WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL,
+	                                0, 0, w, 24,
+	                                hwnd, (HMENU)(INT_PTR)ID_SEARCH, hInst, nullptr);
+
+	// Library tag filter list — single-column report: row 0 is "All modules"
+	// (no filter), then every Rack tag. Selecting a row filters the tree.
+	listTags = CreateWindowExW(0, WC_LISTVIEWW, T(L"Tags", L"Tag"),
+	                           lvStyle,
+	                           0, 0, w, 170,
+	                           hwnd, (HMENU)(INT_PTR)ID_TAGS, hInst, nullptr);
+	ListView_SetExtendedListViewStyle(listTags, lvEx);
+	lvAddColumn(listTags, 0, T(L"Tag", L"Tag"), w - 4);
 
 	// Param ListView
 	listParam = CreateWindowExW(0, WC_LISTVIEWW, T(L"Parameters", L"Parametri"),
@@ -494,8 +579,14 @@ void AccessibleWindow::onCreate() {
 	SetWindowSubclass(listOutput,      ChildSubclassProc, 3, (DWORD_PTR)this);
 	SetWindowSubclass(listInput,       ChildSubclassProc, 4, (DWORD_PTR)this);
 	SetWindowSubclass(listContextMenu, ChildSubclassProc, 5, (DWORD_PTR)this);
+	SetWindowSubclass(searchLibrary,   ChildSubclassProc, 6, (DWORD_PTR)this);
+	SetWindowSubclass(listTags,        ChildSubclassProc, 7, (DWORD_PTR)this);
 
 	SetTimer(hwnd, TIMER_ID, TIMER_MS, nullptr);
+
+	// Lay the controls out now so the stacked LIBRARY panes have correct rects
+	// even if the first LIBRARY entry precedes any WM_SIZE.
+	onSize();
 
 	// Populate the rack list, then show the window: it's MetaRack's sole UI, so it
 	// comes up unconditionally and takes focus straight away.
@@ -532,9 +623,23 @@ void AccessibleWindow::onSize() {
 	int sbH   = sbRc.bottom - sbRc.top;
 	int listH = h - sbH;
 
-	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput, listContextMenu };
-	for (HWND c : ctrls)
+	// Full-band single-pane views.
+	HWND full[] = { listRack, listParam, listOutput, listInput, listContextMenu };
+	for (HWND c : full)
 		SetWindowPos(c, nullptr, 0, 0, w, listH, SWP_NOZORDER | SWP_NOMOVE);
+
+	// LIBRARY is a three-pane view stacked in the same band: tree on top, the
+	// search edit (one line) in the middle, the tag list at the bottom.
+	const int searchH = 24;
+	int tagsH = 170;
+	if (tagsH > listH / 2)
+		tagsH = listH / 2;           // keep the tree usable on short windows
+	int treeH = listH - searchH - tagsH;
+	if (treeH < 0)
+		treeH = 0;
+	SetWindowPos(treeLibrary,   nullptr, 0, 0,                     w, treeH,   SWP_NOZORDER);
+	SetWindowPos(searchLibrary, nullptr, 0, treeH,                 w, searchH, SWP_NOZORDER);
+	SetWindowPos(listTags,      nullptr, 0, treeH + searchH,       w, tagsH,   SWP_NOZORDER);
 }
 
 // ── Status bar ───────────────────────────────────────────────────────────────
@@ -552,9 +657,17 @@ void AccessibleWindow::setStatus(const std::string& msg) {
 // ── View switching ───────────────────────────────────────────────────────────
 
 void AccessibleWindow::switchView(View v) {
-	HWND ctrls[] = { listRack, treeLibrary, listParam, listOutput, listInput, listContextMenu };
-	for (int i = 0; i < 6; i++)
-		ShowWindow(ctrls[i], (i == (int)v) ? SW_SHOW : SW_HIDE);
+	// LIBRARY is a three-pane view (tree + search + tags) shown as a group; every
+	// other view is a single full-band control.
+	bool lib = (v == LIBRARY);
+	ShowWindow(listRack,        v == RACK         ? SW_SHOW : SW_HIDE);
+	ShowWindow(treeLibrary,     lib               ? SW_SHOW : SW_HIDE);
+	ShowWindow(searchLibrary,   lib               ? SW_SHOW : SW_HIDE);
+	ShowWindow(listTags,        lib               ? SW_SHOW : SW_HIDE);
+	ShowWindow(listParam,       v == PARAM        ? SW_SHOW : SW_HIDE);
+	ShowWindow(listOutput,      v == OUTPUT       ? SW_SHOW : SW_HIDE);
+	ShowWindow(listInput,       v == INPUT        ? SW_SHOW : SW_HIDE);
+	ShowWindow(listContextMenu, v == CONTEXT_MENU ? SW_SHOW : SW_HIDE);
 	currentView = v;
 
 	switch (v) {
@@ -568,7 +681,9 @@ void AccessibleWindow::switchView(View v) {
 			break;
 		case LIBRARY:
 			if (!libraryLoaded) {
-				refreshLibraryView();
+				libraryDbInit();
+				buildTagList();
+				rebuildLibraryTree();
 				libraryLoaded = true;
 			}
 			break;
@@ -594,12 +709,12 @@ void AccessibleWindow::switchView(View v) {
 	// hears item 1 on entry and the first Down arrow moves to item 2 (the
 	// expected behaviour). Don't override an existing focus on revisits.
 	if (v == PARAM || v == OUTPUT || v == INPUT || v == CONTEXT_MENU) {
-		HWND lv = ctrls[(int)v];
+		HWND lv = activeControl();
 		if (lvFocused(lv) < 0)
 			lvFocusRow(lv, 0, false);   // SetFocus below makes NVDA announce it
 	}
 
-	SetFocus(ctrls[(int)v]);
+	SetFocus(activeControl());
 }
 
 // ── Timer ────────────────────────────────────────────────────────────────────
@@ -1989,11 +2104,48 @@ void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule, int focus
 
 // ── Library view ─────────────────────────────────────────────────────────────
 
+// Populate the tag filter list once: row 0 "All modules" (lParam -1, no filter),
+// then every Rack tag sorted by its localized display name (lParam = tag id).
+void AccessibleWindow::buildTagList() {
+	ListView_DeleteAllItems(listTags);
+	lvAppendRow(listTags, T(L"All modules", L"Tutti i moduli"), (LPARAM) -1);
+
+	std::vector<std::pair<std::wstring, int>> tags;
+	int n = (int)tag::tagAliases.size();
+	for (int i = 0; i < n; i++)
+		tags.push_back({toWide(string::translate("tag." + tag::getTag(i))), i});
+	std::sort(tags.begin(), tags.end(),
+	[](const std::pair<std::wstring, int>& a, const std::pair<std::wstring, int>& b) {
+		return a.first < b.first;
+	});
+	for (auto& t : tags)
+		lvAppendRow(listTags, t.first, (LPARAM)t.second);
+
+	// Default selection = "All modules" (no announcement: the list isn't focused yet).
+	lvFocusRow(listTags, 0, false);
+}
+
+// Thin wrapper kept for the original call sites; the real work is filter-aware.
 void AccessibleWindow::refreshLibraryView() {
+	rebuildLibraryTree();
+}
+
+// Rebuild the brand → model tree applying the active fuzzy-search string and the
+// selected tag (both must pass — AND semantics, mirroring the native browser).
+void AccessibleWindow::rebuildLibraryTree() {
 	TreeView_DeleteAllItems(treeLibrary);
 
-	// Group models by brand name, merging plugins that share the same brand.
-	// std::map keeps brands in alphabetical order automatically.
+	// Fuzzy-search prefilter: only models returned by the search are eligible.
+	bool useSearch = !librarySearch.empty();
+	std::set<plugin::Model*> matched;
+	if (useSearch) {
+		auto results = g_libraryDb.search(librarySearch);
+		for (auto& r : results)
+			matched.insert(r.key);
+	}
+	bool filtering = useSearch || librarySelectedTag >= 0;
+
+	// Group surviving models by brand name (std::map keeps brands alphabetical).
 	std::map<std::wstring, std::vector<std::pair<std::wstring, plugin::Model*>>> byBrand;
 	for (plugin::Plugin* plug : plugin::plugins) {
 		if (!plug)
@@ -2002,10 +2154,16 @@ void AccessibleWindow::refreshLibraryView() {
 		for (plugin::Model* model : plug->models) {
 			if (!model || model->hidden)
 				continue;
+			if (useSearch && matched.find(model) == matched.end())
+				continue;
+			if (librarySelectedTag >= 0 &&
+			    std::find(model->tagIds.begin(), model->tagIds.end(), librarySelectedTag) == model->tagIds.end())
+				continue;
 			byBrand[brand].push_back({toWide(model->name), model});
 		}
 	}
 
+	int count = 0;
 	for (auto& kv : byBrand) {
 		// Sort models alphabetically within each brand.
 		std::sort(kv.second.begin(), kv.second.end(),
@@ -2032,7 +2190,29 @@ void AccessibleWindow::refreshLibraryView() {
 			mvis.item.pszText     = const_cast<wchar_t*>(name.data());
 			mvis.item.lParam      = (LPARAM)mp.second;
 			TreeView_InsertItem(treeLibrary, &mvis);
+			count++;
 		}
+
+		// With a filter active, expand each brand so the (few) matches are
+		// immediately reachable; unfiltered, keep the tree collapsed.
+		if (filtering)
+			TreeView_Expand(treeLibrary, hPlug, TVE_EXPAND);
+	}
+
+	// Update the status bar silently (no forced speech): the count would be far
+	// too chatty spoken on every keystroke. NVDA users can read it on demand.
+	std::wstring status = std::to_wstring(count) + T(L" modules", L" moduli");
+	SetWindowTextW(statusBar, status.c_str());
+}
+
+// Move focus to one of the three library panes. Landing on an empty-selection
+// tree selects its first row so a screen reader announces something on arrival.
+void AccessibleWindow::focusLibraryPane(HWND pane) {
+	SetFocus(pane);
+	if (pane == treeLibrary && !TreeView_GetSelection(treeLibrary)) {
+		HTREEITEM root = TreeView_GetRoot(treeLibrary);
+		if (root)
+			TreeView_SelectItem(treeLibrary, root);
 	}
 }
 
@@ -2903,6 +3083,41 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
   UINT_PTR /*uid*/, DWORD_PTR data) {
 	auto* self = reinterpret_cast<AccessibleWindow*>(data);
 
+	// The library search edit is a typing sanctuary: only a few navigation keys
+	// are special, everything else (letters, Ctrl+A, editing keys) goes straight
+	// to the edit. Handled before any global shortcut so typing "l"/"r"/"k"… never
+	// triggers navigation or the MIDI toggle.
+	if (hwnd == self->searchLibrary) {
+		// Swallow the Enter/Tab/Esc characters so the single-line edit doesn't beep
+		// (their WM_KEYDOWN is handled as navigation below).
+		if (msg == WM_CHAR && (wp == 0x0D || wp == 0x0A || wp == 0x09 || wp == 0x1B))
+			return 0;
+		if (msg == WM_KEYDOWN) {
+			bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+			bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+			switch (wp) {
+				case VK_DOWN:
+				case VK_RETURN:
+					self->focusLibraryPane(self->treeLibrary);
+					return 0;
+				case VK_ESCAPE:
+					self->switchView(RACK);
+					return 0;
+				case VK_TAB:
+					// tree → search → tags; from search, forward → tags, back → tree.
+					self->focusLibraryPane(shift ? self->treeLibrary : self->listTags);
+					return 0;
+				case 'F':
+					if (ctrl) {   // Ctrl+F while already here: select all text
+						SendMessageW(self->searchLibrary, EM_SETSEL, 0, -1);
+						return 0;
+					}
+					break;
+			}
+		}
+		return DefSubclassProc(hwnd, msg, wp, lp);
+	}
+
 	// Shift+K toggles the computer-keyboard MIDI mode (in either state).
 	if (msg == WM_KEYDOWN && wp == 'K'
 	    && (GetKeyState(VK_SHIFT) & 0x8000)
@@ -2968,6 +3183,14 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 
 		// Global Ctrl shortcuts (work from any view).
 		if (ctrl) {
+			if (wp == 'F') {
+				// Ableton-style: open the library and jump straight to the search
+				// field, selecting any existing text so a new query replaces it.
+				self->switchView(LIBRARY);
+				SetFocus(self->searchLibrary);
+				SendMessageW(self->searchLibrary, EM_SETSEL, 0, -1);
+				return 0;
+			}
 			if (wp == 'N') {
 				self->pushCommand([self]() {
 					APP->patch->loadTemplateDialog();
@@ -3105,7 +3328,14 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 			case VK_RETURN:
 				switch (self->currentView) {
 					case RACK:    self->handleRackKey(VK_RETURN);      return 0;
-					case LIBRARY: self->handleLibraryEnter();           return 0;
+					case LIBRARY:
+						// Enter on a tag row moves to the tree; on the tree it
+						// selects the focused module (handleLibraryEnter).
+						if (hwnd == self->listTags)
+							self->focusLibraryPane(self->treeLibrary);
+						else
+							self->handleLibraryEnter();
+						return 0;
 					case PARAM:   self->handleParamKey(VK_RETURN);     return 0;
 					case OUTPUT:  self->handlePortEnter(true);          return 0;
 					case INPUT:   self->handlePortEnter(false);         return 0;
@@ -3293,6 +3523,20 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				break;
 
 			case VK_TAB: {
+				// In LIBRARY, Tab cycles the three panes: tree → search → tags
+				// (Shift+Tab reverses). The search edit is handled by its own
+				// sanctuary above, so here hwnd is the tree or the tag list.
+				if (self->currentView == LIBRARY) {
+					HWND panes[] = { self->treeLibrary, self->searchLibrary, self->listTags };
+					int cur = 0;
+					for (int i = 0; i < 3; i++)
+						if (hwnd == panes[i])
+							cur = i;
+					int next = shift ? (cur + 2) % 3 : (cur + 1) % 3;
+					self->focusLibraryPane(panes[next]);
+					return 0;
+				}
+
 				// Cycle between the three module-detail views without going back to
 				// the rack: Tab goes PARAM→OUTPUT→INPUT→PARAM, Shift+Tab reverses.
 				// Only active when a module is already open (currentModule set).
