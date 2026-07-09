@@ -70,6 +70,8 @@ struct AccessibleWindow {
 	HWND rackHwnd        = nullptr;  // main Rack window; owns this layer, regains focus when toggled off
 	HWND listRack        = nullptr;
 	HWND treeLibrary     = nullptr;
+	HWND searchLibrary   = nullptr;  // library search edit (Ctrl+F); filters the tree
+	HWND listTags        = nullptr;  // library tag filter list ("All modules" + every tag)
 	HWND listParam       = nullptr;
 	HWND listOutput      = nullptr;
 	HWND listInput       = nullptr;
@@ -92,6 +94,12 @@ struct AccessibleWindow {
 	rack::plugin::Model*  selectedModel    = nullptr;
 	PendingCable          pendingCable;
 	bool                  libraryLoaded    = false;
+
+	// ── Library search / tag filter ───────────────────────────────────────────
+	// The library tree is filtered by both a fuzzy search string and a single
+	// selected tag. librarySelectedTag == -1 means "All modules" (no tag filter).
+	std::string           librarySearch;
+	int                   librarySelectedTag = -1;
 	bool                  rackDirty        = true;
 	std::vector<ContextMenuItem> contextItems;
 
@@ -172,6 +180,14 @@ private:
 	// than jumping back to the first module.
 	void refreshRackView(rack::app::ModuleWidget* focusModule = nullptr, int focusRowFallback = -1);
 	void refreshLibraryView();
+	// Rebuild the library tree applying the current search string and tag filter.
+	// refreshLibraryView() is a thin wrapper around this.
+	void rebuildLibraryTree();
+	// Populate the tag filter list once ("All modules" + every Rack tag).
+	void buildTagList();
+	// Move focus to one of the three library panes (tree / search / tags),
+	// selecting the tree's first row when landing on an empty tree.
+	void focusLibraryPane(HWND pane);
 	void repopulateParamView();   // full rebuild (on module switch)
 	void refreshParamValues();    // update value column only (on timer)
 	void refreshPortView(bool isOutput);
