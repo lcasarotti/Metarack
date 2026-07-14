@@ -2105,6 +2105,30 @@ void AccessibleWindow::refreshRackView(app::ModuleWidget* focusModule, int focus
 // ── Library view ─────────────────────────────────────────────────────────────
 
 // Populate the tag filter list once: row 0 "All modules" (lParam -1, no filter),
+// Linguistic, case-insensitive comparison ("apple" < "Banana" < "Zebra"),
+// matching what users expect from an alphabetical list. std::wstring's operator<
+// is ordinal — it compares by code unit, so every uppercase letter sorts before
+// every lowercase one ("Zebra" before "apple") and accented characters land last.
+// CompareStringEx applies the user's locale rules; SORT_DIGITSASNUMBERS also makes
+// "Filter 2" precede "Filter 10" instead of "Filter 10" precede "Filter 2".
+static bool wlessCI(const std::wstring& a, const std::wstring& b) {
+	int r = CompareStringEx(LOCALE_NAME_USER_DEFAULT,
+	                        LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS,
+	                        a.c_str(), (int)a.size(),
+	                        b.c_str(), (int)b.size(),
+	                        nullptr, nullptr, 0);
+	// CompareStringEx returns 0 on failure; fall back to ordinal so we never crash.
+	if (r == 0)
+		return a < b;
+	return r == CSTR_LESS_THAN;
+}
+
+struct WLessCI {
+	bool operator()(const std::wstring& a, const std::wstring& b) const {
+		return wlessCI(a, b);
+	}
+};
+
 // then every Rack tag sorted by its localized display name (lParam = tag id).
 void AccessibleWindow::buildTagList() {
 	ListView_DeleteAllItems(listTags);
@@ -2116,7 +2140,7 @@ void AccessibleWindow::buildTagList() {
 		tags.push_back({toWide(string::translate("tag." + tag::getTag(i))), i});
 	std::sort(tags.begin(), tags.end(),
 	[](const std::pair<std::wstring, int>& a, const std::pair<std::wstring, int>& b) {
-		return a.first < b.first;
+		return wlessCI(a.first, b.first);
 	});
 	for (auto& t : tags)
 		lvAppendRow(listTags, t.first, (LPARAM)t.second);
@@ -2145,8 +2169,9 @@ void AccessibleWindow::rebuildLibraryTree() {
 	}
 	bool filtering = useSearch || librarySelectedTag >= 0;
 
-	// Group surviving models by brand name (std::map keeps brands alphabetical).
-	std::map<std::wstring, std::vector<std::pair<std::wstring, plugin::Model*>>> byBrand;
+	// Group surviving models by brand name (the WLessCI comparator keeps brands
+	// in true alphabetical order, case-insensitively).
+	std::map<std::wstring, std::vector<std::pair<std::wstring, plugin::Model*>>, WLessCI> byBrand;
 	for (plugin::Plugin* plug : plugin::plugins) {
 		if (!plug)
 			continue;
@@ -2169,7 +2194,7 @@ void AccessibleWindow::rebuildLibraryTree() {
 		std::sort(kv.second.begin(), kv.second.end(),
 		          [](const std::pair<std::wstring, plugin::Model*>& a,
 		const std::pair<std::wstring, plugin::Model*>& b) {
-			return a.first < b.first;
+			return wlessCI(a.first, b.first);
 		});
 
 		std::wstring brand = kv.first;
