@@ -92,6 +92,18 @@ Section "${NAME}" INSTALL_SECTION
 
 	File /r "dist\${DIST_DIR}\*"
 
+	; NVDA Controller Client: lets Rack push status-bar messages straight into
+	; NVDA's speech (NVDA drives this window via MSAA and ignores our UIA
+	; notifications, so this DLL is the only channel that reaches it — JAWS and
+	; Narrator still work through UIA without it). Shipped from the repo root, not
+	; via make_dist.sh, so it's the single source of truth. If absent, Rack still
+	; runs; only NVDA goes silent on the status bar.
+!if /FileExists "nvdaControllerClient.dll"
+	File "nvdaControllerClient.dll"
+!else
+	!error "nvdaControllerClient.dll not found in the repo root. Download the NVDA Controller Client from NV Access and place it at C:\Rack\nvdaControllerClient.dll before building the installer."
+!endif
+
 	; Store installation folder
 	WriteRegStr HKLM "${INSTALL_REG}" "" "$INSTDIR"
 

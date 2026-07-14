@@ -98,6 +98,63 @@ static void uiaInit() {
 	s_UiaRaiseNotify  = procAddr<pfnUiaRaiseNotificationEvent_t>(uia, "UiaRaiseNotificationEvent");
 }
 
+// ── NVDA Controller Client (lazy-loaded) ─────────────────────────────────────
+// NVDA doesn't listen for UIA notification events on a plain Win32 window (it
+// drives it through MSAA/IAccessible instead), so the UiaRaiseNotificationEvent
+// path above is silently ignored by NVDA even though JAWS and Narrator honour it.
+// NV Access ships nvdaControllerClient — a DLL that lets an application push text
+// straight into NVDA's speech queue — as the supported way around exactly this.
+// We load it at runtime (no link-time dependency): if it's absent, or NVDA isn't
+// running, the calls no-op and we fall back to the UIA path.
+//   nvdaController_testIfRunning() returns 0 while NVDA is running.
+//   nvdaController_cancelSpeech() then nvdaController_speakText(text): interrupt any
+//   in-progress speech so the status message is read immediately (user's choice —
+//   status feedback must not wait behind the announcement of the focused item).
+typedef unsigned long error_status_t;
+typedef error_status_t(__stdcall *pfnNvdaTestIfRunning_t)();
+typedef error_status_t(__stdcall *pfnNvdaSpeakText_t)(const wchar_t*);
+typedef error_status_t(__stdcall *pfnNvdaCancelSpeech_t)();
+
+static pfnNvdaTestIfRunning_t s_NvdaTestIfRunning = nullptr;
+static pfnNvdaSpeakText_t     s_NvdaSpeakText     = nullptr;
+static pfnNvdaCancelSpeech_t  s_NvdaCancelSpeech  = nullptr;
+
+static void nvdaInit() {
+	static bool done = false;
+	if (done)
+		return;
+	done = true;
+	// The v2 client library is named nvdaControllerClient.dll; older packages ship
+	// arch-specific names. Try each so a DLL placed next to Rack.exe is found
+	// regardless of which one the user copied in.
+	HMODULE dll = LoadLibraryW(L"nvdaControllerClient.dll");
+	if (!dll)
+		dll = LoadLibraryW(L"nvdaControllerClient64.dll");
+	if (!dll)
+		dll = LoadLibraryW(L"nvdaControllerClient32.dll");
+	if (!dll)
+		return;
+	s_NvdaTestIfRunning = procAddr<pfnNvdaTestIfRunning_t>(dll, "nvdaController_testIfRunning");
+	s_NvdaSpeakText     = procAddr<pfnNvdaSpeakText_t> (dll, "nvdaController_speakText");
+	s_NvdaCancelSpeech  = procAddr<pfnNvdaCancelSpeech_t> (dll, "nvdaController_cancelSpeech");
+}
+
+// Speak text through NVDA if (and only if) NVDA is running. Returns true when the
+// message was handed to NVDA, so the caller can skip the UIA path and avoid any
+// chance of a double announcement.
+static bool nvdaSpeak(const wchar_t* text) {
+	nvdaInit();
+	if (!s_NvdaTestIfRunning || !s_NvdaSpeakText)
+		return false;
+	if (s_NvdaTestIfRunning() != 0)   // non-zero: NVDA not running
+		return false;
+	// Interrupt whatever NVDA is currently saying so the status message is read
+	// immediately (user's choice: status feedback must not wait behind other speech).
+	if (s_NvdaCancelSpeech)
+		s_NvdaCancelSpeech();
+	return s_NvdaSpeakText(text) == 0;
+}
+
 namespace rack {
 namespace accessible {
 
@@ -721,9 +778,13 @@ void AccessibleWindow::switchView(View v) {
 
 void AccessibleWindow::onTimer() {
 	if (!pendingAnnouncement.empty()) {
-		uiaInit();
-		bool ok = false;
-		if (s_UiaHostProvider && s_UiaRaiseNotify && s_SysAllocString && s_SysFreeString) {
+		// NVDA doesn't hear the UIA notification below (it drives this window via
+		// MSAA), so hand the text to it directly through the controller client. When
+		// that succeeds we skip the UIA path so NVDA can't announce it twice.
+		bool ok = nvdaSpeak(pendingAnnouncement.c_str());
+		if (!ok)
+			uiaInit();
+		if (!ok && s_UiaHostProvider && s_UiaRaiseNotify && s_SysAllocString && s_SysFreeString) {
 			IUnknown* prov = nullptr;
 			if (SUCCEEDED(s_UiaHostProvider(hwnd, &prov)) && prov) {
 				BSTR bText = s_SysAllocString(pendingAnnouncement.c_str());
