@@ -2304,6 +2304,26 @@ static std::string portSvgId(app::ModuleWidget* mw, app::PortWidget* pw) {
 	return id;
 }
 
+// Human-readable name of the port at a cable's remote end: the module's port
+// name, or the panel SVG placement id when the port has no name of its own
+// (same "#N" recovery we do for the focused module's own ports above).
+static std::string remotePortName(app::RackWidget* rack, app::PortWidget* remote) {
+	if (!remote || !remote->module)
+		return "";
+	engine::Module* m = remote->module;
+	bool isOut = (remote->type == engine::Port::OUTPUT);
+	engine::PortInfo* info = isOut ? m->getOutputInfo(remote->portId)
+	                         : m->getInputInfo(remote->portId);
+	std::string name = info ? info->getName() : "";
+	if (info && info->name.empty()) {
+		app::ModuleWidget* rmw = rack ? rack->getModule(m->id) : NULL;
+		std::string svgId = portSvgId(rmw, remote);
+		if (!svgId.empty())
+			name = svgId;
+	}
+	return name;
+}
+
 void AccessibleWindow::refreshPortView(bool isOutput) {
 	if (!currentModule || !APP || !APP->scene || !APP->scene->rack)
 		return;
@@ -2340,10 +2360,18 @@ void AccessibleWindow::refreshPortView(bool isOutput) {
 					app::PortWidget* remote = isOutput ? cw->inputPort : cw->outputPort;
 					if (remote) {
 						engine::Module* remMod = remote->module;
-						if (remMod && remMod->model)
+						if (remMod && remMod->model) {
 							status = "→ " + remMod->model->name;
+							// Append the remote port's own name so the user hears
+							// both the module and which of its ports the cable
+							// reaches (e.g. "→ VCF, cutoff CV"). Comma, not colon:
+							// it reads better through the speech synth.
+							std::string rpn = remotePortName(rack, remote);
+							if (!rpn.empty())
+								status += ", " + rpn;
+						}
 						else
-							status = "connesso";
+							status = Ts("connected", "connesso");
 					}
 				}
 			}

@@ -871,10 +871,32 @@ static void refreshParamView(AccessibleWindow* self) {
 }
 
 // ── Port views ───────────────────────────────────────────────────────────────
-// Cable status of one port: "free", "→ RemoteModule", or "connected" if the remote
-// has no model. Reaches the live PortWidget to query its cables. Mirrors the status
-// column the Win32 refreshPortView builds. Only the first cable is reported (parity
-// with Win32; an output can carry several).
+static std::string portSvgId(app::ModuleWidget* mw, app::PortWidget* pw); // fwd
+
+// Human-readable name of the port at a cable's remote end: the module's port
+// name, or the panel SVG placement id when the port has no name of its own.
+// Mirrors remotePortName() in the Win32 AccessibleWindow.cpp.
+static std::string remotePortName(app::PortWidget* remote) {
+	if (!remote || !remote->module || !APP || !APP->scene || !APP->scene->rack)
+		return "";
+	engine::Module* m = remote->module;
+	bool isOut = (remote->type == engine::Port::OUTPUT);
+	engine::PortInfo* info = isOut ? m->getOutputInfo(remote->portId)
+	                         : m->getInputInfo(remote->portId);
+	std::string name = info ? info->getName() : "";
+	if (info && info->name.empty()) {
+		app::ModuleWidget* rmw = APP->scene->rack->getModule(m->id);
+		std::string svgId = portSvgId(rmw, remote);
+		if (!svgId.empty())
+			name = svgId;
+	}
+	return name;
+}
+
+// Cable status of one port: "free", "→ RemoteModule: port", or "connected" if the
+// remote has no model. Reaches the live PortWidget to query its cables. Mirrors the
+// status column the Win32 refreshPortView builds. Only the first cable is reported
+// (parity with Win32; an output can carry several).
 static std::string portStatusString(engine::Module* mod, bool isOutput, int portId) {
 	std::string status = L("free", "libero");
 	if (!mod || !APP || !APP->scene || !APP->scene->rack)
@@ -890,8 +912,15 @@ static std::string portStatusString(engine::Module* mod, bool isOutput, int port
 		return status;
 	app::CableWidget* cw = cables[0];
 	app::PortWidget* remote = isOutput ? cw->inputPort : cw->outputPort;
-	if (remote && remote->module && remote->module->model)
+	if (remote && remote->module && remote->module->model) {
 		status = "→ " + remote->module->model->name;
+		// Append the remote port's own name so the user hears both the module
+		// and which of its ports the cable reaches (e.g. "→ VCF, cutoff CV").
+		// Comma, not colon: it reads better through the speech synth.
+		std::string rpn = remotePortName(remote);
+		if (!rpn.empty())
+			status += ", " + rpn;
+	}
 	else if (remote)
 		status = L("connected", "connesso");
 	return status;
