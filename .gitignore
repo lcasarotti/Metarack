@@ -7,6 +7,11 @@
 
 # Generated build artifacts
 compile_commands.json
+# VST3 wrapper build tree (MSVC/CMake; downloads the VST3 SDK under here).
+# Percorso legacy, in via di rimozione: vedi adapters/vst3/README.md
+/adapters/vst3/build
+# Bundle VST3 prodotto da `make vst3` (gli header travesty in adapters/vst3/ restano tracciati)
+/Rack.vst3
 
 # Binaries and build targets
 *.a

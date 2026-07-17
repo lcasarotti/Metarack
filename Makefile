@@ -132,7 +132,8 @@ spike: $(SPIKE_TARGET)
 
 # CLAP plugin adapter (Fase 1): libRack linkato in una DSO .clap che il DAW carica.
 # Su Windows un .clap è semplicemente una DLL che esporta il simbolo `clap_entry`.
-CLAP_SOURCES += adapters/clap.cpp
+# clap.cpp è solo il guscio ABI; la logica di Rack sta in rackhost.cpp, condiviso col VST3.
+CLAP_SOURCES += adapters/clap.cpp adapters/rackhost.cpp
 ifdef ARCH_WIN
 	CLAP_TARGET := Rack.clap
 	CLAP_LDFLAGS += -shared
@@ -166,6 +167,74 @@ $(CLAPTEST_TARGET): $(CLAPTEST_SOURCES) $(CLAP_TARGET)
 	$(CXX) $(CXXFLAGS) -Idep/clap/include -o $@ $(CLAPTEST_SOURCES)
 
 claptest: $(CLAPTEST_TARGET)
+
+# VST3 adapter scritto a mano: nessun SDK Steinberg e nessun wrapper: adapters/vst3.cpp
+# implementa l'ABI VST3 con gli header travesty (C puro), quindi si costruisce con lo stesso
+# MinGW di libRack invece che con MSVC. Su Windows un .vst3 è una DLL dentro un bundle.
+#
+# Il bundle deve portarsi dietro OGNI dipendenza. Windows non cerca le dipendenze di una DLL
+# nella cartella della DLL stessa: il search path parte dall'EXE host, che qui è il DAW
+# (reaper.exe), non noi. I loader VST3 caricano il modulo con LOAD_WITH_ALTERED_SEARCH_PATH
+# proprio perché un bundle possa risolvere le proprie librerie. Servono:
+#   - libRack.dll
+#   - il runtime MinGW: su Windows libRack NON è linkata staticamente a libstdc++/libgcc
+#     (il -static-libstdc++ del Makefile è solo per ARCH_LIN), quindi le tre DLL vanno
+#     spedite, esattamente come fa il target `dist` per lo standalone.
+#   - nvdaControllerClient.dll, caricata a runtime dalla finestra accessibile.
+# Le prime le chiediamo al compilatore, così non incastriamo a mano la versione del toolchain.
+# Il modulo che l'host carica è uno STUB senza dipendenze (adapters/vst3stub.c), che carica
+# l'adapter vero per percorso assoluto. Senza lo stub, un host con ricerca DLL ristretta
+# (LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) non riesce a risolvere libRack.dll accanto al modulo e
+# il plugin sparisce senza errori: è ciò che facevano Reaper e Ableton. Vedi vst3stub.c.
+VST3_SOURCES += adapters/vst3.cpp adapters/rackhost.cpp
+VST3_STUB_SOURCES += adapters/vst3stub.c
+ifdef ARCH_WIN
+	VST3_BUNDLE := Rack.vst3
+	VST3_BUNDLE_DIR := $(VST3_BUNDLE)/Contents/x86_64-win
+	VST3_TARGET := $(VST3_BUNDLE_DIR)/Rack.vst3
+	VST3_ADAPTER := $(VST3_BUNDLE_DIR)/RackVst3Adapter.dll
+	VST3_LDFLAGS += -shared
+	# Lo stub non deve dipendere da NESSUNA DLL affiancata, o il problema si riproporrebbe su
+	# di lui: -static-libgcc elimina libgcc_s_seh-1.dll. Restano solo kernel32 e msvcrt, che
+	# stanno in System32 e sono risolvibili con qualunque politica di ricerca dell'host.
+	VST3_STUB_LDFLAGS += -shared -static-libgcc
+	VST3_RUNTIME_DLLS := $(shell $(CXX) -print-file-name=libstdc++-6.dll) \
+	                     $(shell $(CXX) -print-file-name=libgcc_s_seh-1.dll) \
+	                     $(shell $(CXX) -print-file-name=libwinpthread-1.dll)
+endif
+VST3_OBJECTS += $(TARGET)
+
+$(VST3_ADAPTER): $(VST3_SOURCES) $(VST3_OBJECTS)
+	mkdir -p $(VST3_BUNDLE_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(VST3_LDFLAGS)
+	cp $(TARGET) $(VST3_RUNTIME_DLLS) $(VST3_BUNDLE_DIR)/
+	cp nvdaControllerClient.dll $(VST3_BUNDLE_DIR)/ 2>/dev/null || echo "NB: nvdaControllerClient.dll assente, NVDA non parlerà dal plugin"
+	# -MMD scrive il .d accanto all'output: nel bundle, che spediamo, non ci va.
+	rm -f $(VST3_BUNDLE_DIR)/*.d
+
+$(VST3_TARGET): $(VST3_STUB_SOURCES) $(VST3_ADAPTER)
+	$(CC) $(CFLAGS) -o $@ $(VST3_STUB_SOURCES) $(VST3_STUB_LDFLAGS)
+	rm -f $(VST3_BUNDLE_DIR)/*.d
+
+vst3: $(VST3_TARGET)
+
+# Dev harness: mini-host VST3 da console, gemello di claptest. Con un ABI scritto a mano è
+# l'unico modo di distinguere "il DAW non lo vede" da "l'ABI è sbagliato".
+VST3TEST_SOURCES += adapters/vst3test.cpp
+ifdef ARCH_WIN
+	VST3TEST_TARGET := RackVst3Test.exe
+	# Linkato staticamente di proposito: l'harness non deve dipendere da DLL accanto a sé,
+	# così può girare da una cartella qualsiasi e testare ONESTAMENTE se è il BUNDLE a essere
+	# autosufficiente. Girando da C:\Rack (dove stanno libRack.dll e il runtime) il test
+	# passerebbe anche con un bundle incompleto: le DLL verrebbero risolte dalla cartella
+	# dell'eseguibile, non dal bundle.
+	VST3TEST_LDFLAGS += -static-libstdc++ -static-libgcc
+endif
+
+$(VST3TEST_TARGET): $(VST3TEST_SOURCES) $(VST3_TARGET)
+	$(CXX) $(CXXFLAGS) -o $@ $(VST3TEST_SOURCES) $(VST3TEST_LDFLAGS)
+
+vst3test: $(VST3TEST_TARGET)
 
 # Convenience targets
 
@@ -229,7 +298,7 @@ valgrind: $(STANDALONE_TARGET)
 	valgrind $(VALGRIND_FLAGS) ./$< -d
 
 clean:
-	rm -rfv build dist $(TARGET) $(STANDALONE_TARGET) $(SPIKE_TARGET) $(CLAP_TARGET) $(CLAPTEST_TARGET) *.a
+	rm -rfv build dist $(TARGET) $(STANDALONE_TARGET) $(SPIKE_TARGET) $(CLAP_TARGET) $(CLAPTEST_TARGET) $(VST3_BUNDLE) $(VST3TEST_TARGET) *.a
 
 # Windows resources
 WINDRES ?= windres
@@ -438,4 +507,4 @@ cleandist:
 
 
 .DEFAULT_GOAL := all
-.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link spike clap
+.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link spike clap claptest vst3 vst3test
