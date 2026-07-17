@@ -68,6 +68,7 @@ struct AccessibleWindow {
 
 	HWND hwnd            = nullptr;
 	HWND rackHwnd        = nullptr;  // main Rack window; owns this layer, regains focus when toggled off
+	HWND hostWindow      = nullptr;  // plugin mode: the DAW's main window, so F6 can return focus there
 	HWND listRack        = nullptr;
 	HWND treeLibrary     = nullptr;
 	HWND searchLibrary   = nullptr;  // library search edit (Ctrl+F); filters the tree
@@ -139,6 +140,15 @@ struct AccessibleWindow {
 	// Singleton instance so the main run loop can drain queued commands at a
 	// safe point. There is only ever one accessible window.
 	static AccessibleWindow* instance;
+
+	// Plugin mode (CLAP/VST3 adapter): there is no Rack run loop / Window::step()
+	// to call drainCommands() at a frame boundary, and the GL window is never
+	// rendered. When true, onTimer() drains the command queue itself (the WM_TIMER
+	// is pumped by the host's message loop). Left false in the standalone app,
+	// where draining from a timer would tear down OpenGL framebuffers mid-frame
+	// (Window::step already drains at the safe point). Set by the plugin adapter
+	// right after create().
+	bool pluginMode = false;
 
 	// owner: the main Rack window's HWND. The accessible interface becomes an
 	// owned tool window (no Alt+Tab / taskbar entry) shown as a toggleable layer

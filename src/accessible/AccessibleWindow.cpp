@@ -119,19 +119,45 @@ static pfnNvdaTestIfRunning_t s_NvdaTestIfRunning = nullptr;
 static pfnNvdaSpeakText_t     s_NvdaSpeakText     = nullptr;
 static pfnNvdaCancelSpeech_t  s_NvdaCancelSpeech  = nullptr;
 
+// Load a DLL by bare name, then — if that fails — by an explicit path next to the module
+// that contains this code (libRack). The bare name searches the *host executable's*
+// directory: fine for the standalone, useless inside a plugin, where the host is the DAW
+// (reaper.exe) and our DLLs live in the plugin bundle instead.
+static HMODULE loadDllBesideLibRack(const wchar_t* name) {
+	if (HMODULE dll = LoadLibraryW(name))
+		return dll;
+
+	HMODULE self = nullptr;
+	if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                        reinterpret_cast<LPCWSTR>(&loadDllBesideLibRack), &self))
+		return nullptr;
+	wchar_t path[MAX_PATH] = L"";
+	const DWORD len = GetModuleFileNameW(self, path, MAX_PATH);
+	if (len == 0 || len >= MAX_PATH)
+		return nullptr;
+	wchar_t* slash = wcsrchr(path, L'\\');
+	if (!slash)
+		return nullptr;
+	slash[1] = L'\0';
+	if (wcslen(path) + wcslen(name) >= MAX_PATH)
+		return nullptr;
+	wcscat(path, name);
+	return LoadLibraryW(path);
+}
+
 static void nvdaInit() {
 	static bool done = false;
 	if (done)
 		return;
 	done = true;
 	// The v2 client library is named nvdaControllerClient.dll; older packages ship
-	// arch-specific names. Try each so a DLL placed next to Rack.exe is found
-	// regardless of which one the user copied in.
-	HMODULE dll = LoadLibraryW(L"nvdaControllerClient.dll");
+	// arch-specific names. Try each so a DLL placed next to Rack.exe (or, in a plugin,
+	// inside our bundle) is found regardless of which one the user copied in.
+	HMODULE dll = loadDllBesideLibRack(L"nvdaControllerClient.dll");
 	if (!dll)
-		dll = LoadLibraryW(L"nvdaControllerClient64.dll");
+		dll = loadDllBesideLibRack(L"nvdaControllerClient64.dll");
 	if (!dll)
-		dll = LoadLibraryW(L"nvdaControllerClient32.dll");
+		dll = loadDllBesideLibRack(L"nvdaControllerClient32.dll");
 	if (!dll)
 		return;
 	s_NvdaTestIfRunning = procAddr<pfnNvdaTestIfRunning_t>(dll, "nvdaController_testIfRunning");
@@ -374,11 +400,17 @@ AccessibleWindow* AccessibleWindow::create(HWND owner) {
 	self->rackHwnd = owner;
 	instance = self;
 
-	// MetaRack's only window: a normal top-level window (own Alt+Tab / taskbar entry,
-	// no owner) shown unconditionally by onCreate(). The Rack GLFW window is hidden at
-	// startup (see standalone.cpp), so this is the sole UI the user ever sees.
+	// MetaRack's only window: a normal top-level window shown unconditionally by
+	// onCreate(). The Rack GLFW window is hidden at startup (see standalone.cpp), so
+	// this is the sole UI the user ever sees.
+	//
+	// WS_EX_APPWINDOW forces an Alt+Tab / taskbar entry. It is redundant standalone
+	// (a top-level window with no owner already has one) but load-bearing in plugin
+	// mode: guiSetTransient() later makes this window OWNED by the DAW's main window
+	// (for z-order), which would normally strip it from Alt+Tab — leaving a blind user
+	// no keyboard route back to it. WS_EX_APPWINDOW keeps the entry regardless.
 	HWND hwnd = CreateWindowExW(
-	              0,
+	              WS_EX_APPWINDOW,
 	              WND_CLASS,
 	              L"MetaRack",
 	              WS_OVERLAPPEDWINDOW,
@@ -821,6 +853,14 @@ void AccessibleWindow::onTimer() {
 	}
 	if (announcerTicks > 0 && --announcerTicks == 0)
 		SetWindowTextW(announcer, L"");
+
+	// Plugin mode: no Rack run loop drives drainCommands(), so do it here. The
+	// WM_TIMER firing this is dispatched by the host's message loop. Safe because
+	// in a plugin the GL window is hidden and never rendered — there is no active
+	// frame whose framebuffers a widget teardown could corrupt. (In the standalone
+	// app pluginMode is false and Window::step() owns the drain; see header.)
+	if (pluginMode)
+		drainCommands();
 
 	// Tier B learn mode: poll the learning cell for value changes.
 	if (learningCell && APP && APP->event) {
@@ -3208,6 +3248,27 @@ void AccessibleWindow::toggleMidiKeyboard() {
 	          : Ts("MIDI keyboard off.", "Tastiera MIDI disattivata."));
 }
 
+// Bring `target` to the foreground and give it focus, defeating Windows' foreground
+// lock. Plain SetForegroundWindow() is often ignored when the calling thread doesn't
+// own the current foreground; attaching our input queue to the foreground thread for
+// the duration lifts that restriction. Used both to pull MetaRack forward and to hand
+// focus back to the DAW.
+static void forceForeground(HWND target) {
+	if (!target)
+		return;
+	HWND fg = GetForegroundWindow();
+	DWORD fgThread = GetWindowThreadProcessId(fg, nullptr);
+	DWORD myThread = GetCurrentThreadId();
+	if (fgThread != myThread)
+		AttachThreadInput(myThread, fgThread, TRUE);
+	ShowWindow(target, SW_SHOW);
+	BringWindowToTop(target);
+	SetForegroundWindow(target);
+	SetFocus(target);
+	if (fgThread != myThread)
+		AttachThreadInput(myThread, fgThread, FALSE);
+}
+
 LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
   HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
   UINT_PTR /*uid*/, DWORD_PTR data) {
@@ -3310,6 +3371,15 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 	if (msg == WM_KEYDOWN) {
 		bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+		// F6 hands focus back to the DAW (plugin mode only). MetaRack is a separate
+		// top-level window, so the host never sees an F6 pressed here — we intercept it
+		// and foreground the host ourselves, mirroring Reaper's "F6 returns to the
+		// arrange view" convention. From there Alt+Tab (or F6 again) comes back.
+		if (wp == VK_F6 && self->hostWindow) {
+			forceForeground(self->hostWindow);
+			return 0;
+		}
 
 		// Global Ctrl shortcuts (work from any view).
 		if (ctrl) {
