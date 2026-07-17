@@ -165,6 +165,11 @@ private:
 	void onSize();
 	void onTimer();
 
+	// Speak a short message without writing it to the status bar. Unlike
+	// setStatus() this is for transient feedback (a param value being dragged
+	// through) that has no business persisting in the status line.
+	void speak(const std::wstring& text);
+
 	// HWND of the control backing the currently active View (the one to focus).
 	HWND activeControl();
 

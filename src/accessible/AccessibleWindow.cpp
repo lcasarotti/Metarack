@@ -711,6 +711,20 @@ void AccessibleWindow::setStatus(const std::string& msg) {
 	pendingAnnouncement = std::move(w);
 }
 
+void AccessibleWindow::speak(const std::wstring& text) {
+	// Called from the WndProc, which already runs in message-pump context, so the
+	// controller client's RPC can go out right now instead of waiting for the next
+	// onTimer tick — the announcement has to keep up with the arrow key repeat.
+	// nvdaSpeak() cancels pending speech first, so a held-down arrow simply
+	// replaces the queued value each time and the user hears where they landed
+	// rather than every step along the way.
+	if (nvdaSpeak(text.c_str()))
+		return;
+	// No NVDA (JAWS, Narrator): fall back to the UIA/live-region path in onTimer,
+	// which does need pump context of its own.
+	pendingAnnouncement = text;
+}
+
 // ── View switching ───────────────────────────────────────────────────────────
 
 void AccessibleWindow::switchView(View v) {
@@ -2958,10 +2972,12 @@ void AccessibleWindow::handleParamKey(WPARAM vk) {
 		pq->setValue(next);
 	}
 
-	// Update only the visible value cell — do NOT re-fire EVENT_OBJECT_FOCUS here,
-	// as continuous NVDA announcements would drown out the synthesizer audio.
+	// Update the visible value cell and speak the new value on its own. Do NOT
+	// re-fire EVENT_OBJECT_FOCUS here: that would make the whole row (param name
+	// included) be read on every step, which drowns out the synthesizer audio.
 	std::wstring valW = toWide(pq->getDisplayValueString() + pq->getUnit());
 	lvSetSubtext(listParam, row, 1, valW);
+	speak(valW);
 }
 
 bool AccessibleWindow::isMomentaryParam(int paramId) {
