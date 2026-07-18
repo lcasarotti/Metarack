@@ -147,6 +147,9 @@ void logIn(std::string email, std::string password) {
 
 	const char* tokenStr = json_string_value(tokenJ);
 	settings::token = tokenStr;
+	// Persist the token immediately so it survives a plugin/adapter session,
+	// whose deinit deliberately doesn't write the full settings file.
+	settings::saveToken();
 	loginStatus = "";
 	refreshRequested = true;
 }
@@ -154,6 +157,7 @@ void logIn(std::string email, std::string password) {
 
 void logOut() {
 	settings::token = "";
+	settings::saveToken();
 	updateInfos.clear();
 }
 

@@ -138,6 +138,10 @@ PRIVATE json_t* toJson();
 PRIVATE void fromJson(json_t* rootJ);
 PRIVATE void save(std::string path = "");
 PRIVATE void load(std::string path = "");
+/** Persists only the `token` field, merging it into the existing settings file
+without rewriting the rest. Safe to call from a plugin/adapter that must not
+clobber the shared standalone settings. */
+PRIVATE void saveToken(std::string path = "");
 
 
 } // namespace settings

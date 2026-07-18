@@ -608,6 +608,35 @@ void save(std::string path) {
 	system::rename(tmpPath, path);
 }
 
+void saveToken(std::string path) {
+	if (path.empty())
+		path = settingsPath;
+
+	// Read the current on-disk settings so we only touch the "token" field and
+	// preserve everything else (the standalone may own this file). If the file
+	// doesn't exist or is unreadable yet, start from an empty object.
+	json_t* rootJ = NULL;
+	if (FILE* readFile = std::fopen(path.c_str(), "r")) {
+		json_error_t error;
+		rootJ = json_loadf(readFile, 0, &error);
+		std::fclose(readFile);
+	}
+	if (!rootJ)
+		rootJ = json_object();
+	DEFER({json_decref(rootJ);});
+
+	json_object_set_new(rootJ, "token", json_string(token.c_str()));
+
+	INFO("Saving token to settings %s", path.c_str());
+	std::string tmpPath = path + ".tmp";
+	FILE* file = std::fopen(tmpPath.c_str(), "w");
+	if (!file)
+		return;
+	json_dumpf(rootJ, file, JSON_INDENT(2));
+	std::fclose(file);
+	system::rename(tmpPath, path);
+}
+
 void load(std::string path) {
 	if (path.empty())
 		path = settingsPath;
