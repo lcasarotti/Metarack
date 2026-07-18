@@ -3688,7 +3688,11 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				}
 				break;
 			case 'D':
-				if (self->currentView == RACK || self->currentView == PARAM) {
+				// Open the focused module's clickable displays — RACK only. In the
+				// PARAM/INPUT/OUTPUT lists a bare letter must stay available for the
+				// ListView's first-letter type-ahead, so we don't intercept 'D' there
+				// (otherwise navigating to a "d…" row would trigger the display list).
+				if (self->currentView == RACK) {
 					self->handleDisplayKey();
 					return 0;
 				}
