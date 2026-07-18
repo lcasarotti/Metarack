@@ -27,6 +27,7 @@
 #include "vst3/travesty/view.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 #include "rackhost.hpp"
@@ -53,6 +54,12 @@ const char* const kVendor = "Metarack";
 const char* const kVersion = "2.6.4";
 // Sub-categorie VST3: come il CLAP, ci dichiariamo sia strumento che effetto stereo.
 const char* const kSubCategories = "Instrument|Fx|Stereo";
+
+// I rackhost::kNumChannels canali del ponte audio, esposti all'host come BUS STEREO separati
+// (uno per coppia): 8 in ingresso e 8 in uscita. Bus 0 = MAIN, gli altri AUX → strumento
+// multi-uscita, ogni coppia instradabile su una traccia diversa del DAW. Stessa scelta in
+// clap.cpp (là come porte CLAP), qui come bus VST3.
+constexpr int32_t kStereoBuses = rackhost::kNumChannels / 2;
 
 
 // Copia una stringa ASCII in un campo UTF-16 di dimensione fissa (v3_str_128 e i campi
@@ -634,18 +641,23 @@ uint32_t V3_API RackAudioProcessor::unrefFn(void* self) {
 v3_result V3_API RackAudioProcessor::setBusArrangements(void* /*self*/,
     v3_speaker_arrangement* inputs, int32_t numInputs,
     v3_speaker_arrangement* outputs, int32_t numOutputs) {
-	// Accettiamo solo stereo/stereo: è il formato del ponte verso il modulo Core Audio.
+	// Accettiamo esattamente kStereoBuses bus stereo per direzione: è il formato del ponte
+	// verso il modulo Core Audio-16 (ogni bus = una coppia di canali del device DAW).
 	const v3_speaker_arrangement stereo = V3_SPEAKER_L | V3_SPEAKER_R;
-	if (numInputs != 1 || numOutputs != 1)
+	if (numInputs != kStereoBuses || numOutputs != kStereoBuses)
 		return V3_FALSE;
-	if (inputs[0] != stereo || outputs[0] != stereo)
-		return V3_FALSE;
+	for (int32_t i = 0; i < numInputs; i++)
+		if (inputs[i] != stereo)
+			return V3_FALSE;
+	for (int32_t i = 0; i < numOutputs; i++)
+		if (outputs[i] != stereo)
+			return V3_FALSE;
 	return V3_OK;
 }
 
 v3_result V3_API RackAudioProcessor::getBusArrangement(void* /*self*/, int32_t /*busDirection*/,
     int32_t idx, v3_speaker_arrangement* arr) {
-	if (idx != 0)
+	if (idx < 0 || idx >= kStereoBuses)
 		return V3_INVALID_ARG;
 	*arr = V3_SPEAKER_L | V3_SPEAKER_R;
 	return V3_OK;
@@ -681,23 +693,27 @@ v3_result V3_API RackAudioProcessor::process(void* self, v3_process_data* data) 
 	if (data->symbolic_sample_size != V3_SAMPLE_32)
 		return V3_FALSE;
 
-	// VST3 usa buffer PLANARI (channel_buffers_32[canale][frame]), come rackhost::processPlanar.
-	// Un host può presentare zero bus (es. durante il bypass): trattiamo tutto come NULL-safe.
-	const float* const* in = nullptr;
-	uint32_t numIn = 0;
-	if (data->num_input_buses > 0 && data->inputs && data->inputs[0].channel_buffers_32) {
-		in = data->inputs[0].channel_buffers_32;
-		numIn = (uint32_t) data->inputs[0].num_channels;
+	// VST3 usa buffer PLANARI (channel_buffers_32[canale][frame]) e un array per ogni bus.
+	// rackhost::processPlanar vuole invece UN array piatto di kNumChannels puntatori-per-
+	// canale, quindi srotoliamo qui gli 8 bus stereo in ingresso e in uscita. Gli array
+	// nascono azzerati ({}), così un bus non presentato dall'host (bypass, o coppia non
+	// allocata) resta silenzio: tutto NULL-safe.
+	const float* inChans[rackhost::kNumChannels] = {};
+	float* outChans[rackhost::kNumChannels] = {};
+
+	for (int32_t b = 0; data->inputs && b < data->num_input_buses && b < kStereoBuses; b++) {
+		const v3_audio_bus_buffers& bus = data->inputs[b];
+		for (int32_t c = 0; c < bus.num_channels && c < 2; c++)
+			inChans[b * 2 + c] = bus.channel_buffers_32 ? bus.channel_buffers_32[c] : nullptr;
+	}
+	for (int32_t b = 0; data->outputs && b < data->num_output_buses && b < kStereoBuses; b++) {
+		const v3_audio_bus_buffers& bus = data->outputs[b];
+		for (int32_t c = 0; c < bus.num_channels && c < 2; c++)
+			outChans[b * 2 + c] = bus.channel_buffers_32 ? bus.channel_buffers_32[c] : nullptr;
 	}
 
-	float* const* out = nullptr;
-	uint32_t numOut = 0;
-	if (data->num_output_buses > 0 && data->outputs && data->outputs[0].channel_buffers_32) {
-		out = data->outputs[0].channel_buffers_32;
-		numOut = (uint32_t) data->outputs[0].num_channels;
-	}
-
-	rackhost::processPlanar(rack, in, numIn, out, numOut, (uint32_t) data->nframes);
+	rackhost::processPlanar(rack, inChans, rackhost::kNumChannels,
+	                        outChans, rackhost::kNumChannels, (uint32_t) data->nframes);
 	return V3_OK;
 }
 
@@ -831,21 +847,26 @@ v3_result V3_API RackComponent::setIoMode(void* /*self*/, int32_t /*ioMode*/) {
 }
 
 int32_t V3_API RackComponent::getBusCount(void* /*self*/, int32_t mediaType, int32_t /*busDirection*/) {
-	// Un bus audio stereo per direzione; niente bus di eventi (nessun MIDI in v1).
-	return (mediaType == V3_AUDIO) ? 1 : 0;
+	// kStereoBuses bus audio stereo per direzione; niente bus di eventi (nessun MIDI in v1).
+	return (mediaType == V3_AUDIO) ? kStereoBuses : 0;
 }
 
 v3_result V3_API RackComponent::getBusInfo(void* /*self*/, int32_t mediaType, int32_t busDirection,
     int32_t busIdx, v3_bus_info* info) {
-	if (mediaType != V3_AUDIO || busIdx != 0)
+	if (mediaType != V3_AUDIO || busIdx < 0 || busIdx >= kStereoBuses)
 		return V3_INVALID_ARG;
 	std::memset(info, 0, sizeof(*info));
 	info->media_type = V3_AUDIO;
 	info->direction = busDirection;
 	info->channel_count = 2;
-	copyUtf16(info->bus_name, (busDirection == V3_INPUT) ? "Main In" : "Main Out",
-	          sizeof(info->bus_name) / sizeof(info->bus_name[0]));
-	info->bus_type = V3_MAIN;
+	// Nome 1-based come lo conta un DAW: bus 0 -> "1/2", bus 1 -> "3/4", ...
+	char name[32];
+	std::snprintf(name, sizeof(name), "%s %d/%d",
+	              (busDirection == V3_INPUT) ? "In" : "Out", busIdx * 2 + 1, busIdx * 2 + 2);
+	copyUtf16(info->bus_name, name, sizeof(info->bus_name) / sizeof(info->bus_name[0]));
+	// Bus 0 = principale, gli altri ausiliari. Tutti default-attivi, così l'host li alloca e
+	// li presenta a process() senza che l'utente debba abilitarli a mano.
+	info->bus_type = (busIdx == 0) ? V3_MAIN : V3_AUX;
 	info->flags = V3_DEFAULT_ACTIVE;
 	return V3_OK;
 }
@@ -857,7 +878,7 @@ v3_result V3_API RackComponent::getRoutingInfo(void* /*self*/, v3_routing_info* 
 
 v3_result V3_API RackComponent::activateBus(void* /*self*/, int32_t /*mediaType*/,
     int32_t /*busDirection*/, int32_t /*busIdx*/, v3_bool /*state*/) {
-	// I nostri due bus sono sempre attivi: accettiamo senza fare nulla.
+	// I nostri bus sono sempre attivi: accettiamo senza fare nulla.
 	return V3_OK;
 }
 

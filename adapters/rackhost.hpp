@@ -39,6 +39,13 @@ struct AccessibleWindow;
 namespace rackhost {
 
 
+// Canali audio esposti al DAW, in ingresso e in uscita. Sono i 16 del modulo Core
+// Audio-16 di Rack. L'adapter CLAP li affetta in 8 bus stereo (uno per coppia), ma a
+// rackhost interessa solo il totale: device, buffer interleaved e conversione planare lo
+// leggono da qui, così i tre punti non possono più andare fuori sincrono.
+constexpr int kNumChannels = 16;
+
+
 // --- ciclo di vita del processo -------------------------------------------------------
 //
 // Refcounted: il lavoro vero avviene solo quando il contatore passa per zero, così un host
@@ -85,8 +92,8 @@ void deactivate(Instance* inst);
 
 // CLAP e VST3 passano entrambi buffer PLANARI (canale -> array di frame), mentre
 // audio::Device::processBuffer vuole buffer INTERLEAVED con stride: la conversione nei due
-// sensi vive qui. in può essere nullptr (ingresso non collegato -> silenzio); con un solo
-// canale d'ingresso L viene duplicato su R.
+// sensi vive qui. `in`/`out` sono array di kNumChannels puntatori-per-canale; un singolo
+// puntatore nullo (bus non collegato dall'host) vale silenzio per quel canale.
 void processPlanar(Instance* inst, const float* const* in, uint32_t numIn,
                    float* const* out, uint32_t numOut, uint32_t frames);
 

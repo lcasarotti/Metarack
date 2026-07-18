@@ -77,8 +77,8 @@ const int DAW_DRIVER_ID = 0x44415721; // "DAW!" — qualunque id stabile != -1
 struct DawDevice : audio::Device {
 	double sampleRate = 44100.0;
 	int blockSize = 512;
-	int numInputs = 2;
-	int numOutputs = 2;
+	int numInputs = kNumChannels;
+	int numOutputs = kNumChannels;
 
 	std::string getName() override {
 		return "DAW";
@@ -217,7 +217,7 @@ void bindAudioModuleToDaw(engine::Module* audioModule, double sampleRate, int bl
 // Cavi di loopback dalle uscite del modulo Audio ai suoi stessi ingressi: DAW in -> DAW out.
 // Versione bare-engine, per il percorso headless dove non esiste un albero di widget.
 void addPassthroughCablesHeadless(engine::Module* audioModule) {
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < kNumChannels; i++) {
 		engine::Cable* cable = new engine::Cable;
 		cable->outputModule = audioModule;
 		cable->outputId = i;
@@ -253,7 +253,7 @@ void addPassthroughCablesWithWidgets(engine::Module* audioModule) {
 	app::ModuleWidget* mw = rack->getModule(audioModule->id);
 	if (!mw)
 		return;
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < kNumChannels; i++) {
 		app::PortWidget* outPort = mw->getOutput(i);
 		app::PortWidget* inPort = mw->getInput(i);
 		if (!outPort || !inPort)
@@ -273,9 +273,9 @@ void addPassthroughCablesWithWidgets(engine::Module* audioModule) {
 // modulo -> engine->addModule() PRIMA del widget -> createModuleWidget -> rack->addModule.
 // Saltare engine->addModule farebbe asserire l'engine quando il widget viene distrutto.
 void addDawAudioModule(Instance* inst) {
-	plugin::Model* audioModel = plugin::getModel("Core", "AudioInterface2");
+	plugin::Model* audioModel = plugin::getModel("Core", "AudioInterface16");
 	if (!audioModel) {
-		WARN("Modello Core/AudioInterface2 non trovato: nessun ponte audio (Core caricato?)");
+		WARN("Modello Core/AudioInterface16 non trovato: nessun ponte audio (Core caricato?)");
 		return;
 	}
 	engine::Module* m = audioModel->createModule();
@@ -478,7 +478,7 @@ Instance* createInstance() {
 	// --- Fuori da Windows: percorso headless bare-engine ------------------------------
 	// Grafo pass-through diretto nell'engine (niente widget, niente finestra): DAW in ->
 	// engine -> DAW out.
-	plugin::Model* audioModel = plugin::getModel("Core", "AudioInterface2");
+	plugin::Model* audioModel = plugin::getModel("Core", "AudioInterface16");
 	if (audioModel) {
 		inst->audioModule = audioModel->createModule();
 		APP->engine->addModule(inst->audioModule);
@@ -488,7 +488,7 @@ Instance* createInstance() {
 		     (long long) inst->audioModule->id);
 	}
 	else {
-		WARN("Modello Core/AudioInterface2 non trovato: nessun audio (Core caricato?)");
+		WARN("Modello Core/AudioInterface16 non trovato: nessun audio (Core caricato?)");
 	}
 #endif
 
@@ -539,9 +539,9 @@ bool activate(Instance* inst, double sampleRate, uint32_t maxFrames) {
 	g_dawDriver->device.setSampleRate((float) sampleRate);
 	g_dawDriver->device.setBlockSize((int) maxFrames);
 
-	// Preallocazione buffer interleaved (2 canali). Mai allocare in process().
-	inst->inInterleaved.assign((size_t) maxFrames * 2, 0.f);
-	inst->outInterleaved.assign((size_t) maxFrames * 2, 0.f);
+	// Preallocazione buffer interleaved (kNumChannels canali). Mai allocare in process().
+	inst->inInterleaved.assign((size_t) maxFrames * kNumChannels, 0.f);
+	inst->outInterleaved.assign((size_t) maxFrames * kNumChannels, 0.f);
 
 	INFO("Istanza attivata: sampleRate=%g maxFrames=%u", sampleRate, maxFrames);
 	return true;
@@ -563,27 +563,32 @@ void processPlanar(Instance* inst, const float* const* in, uint32_t numIn,
 	if (frames > inst->maxFrames)
 		return;
 
-	// Sorgenti di input (NULL-safe: se l'host non collega l'ingresso, trattiamo come zero;
-	// con un solo canale duplichiamo L su R).
-	const float* inL = (in && numIn > 0) ? in[0] : nullptr;
-	const float* inR = (in && numIn > 1) ? in[1] : inL;
-
+	// Planare -> interleaved (stride = kNumChannels). Un canale oltre numIn o con puntatore
+	// nullo (bus non collegato dall'host) vale silenzio. Le ricerche del puntatore stanno
+	// fuori dal loop dei frame: è il thread audio, niente lavoro inutile per campione.
 	float* inter = inst->inInterleaved.data();
-	for (uint32_t i = 0; i < frames; i++) {
-		inter[2 * i + 0] = inL ? inL[i] : 0.f;
-		inter[2 * i + 1] = inR ? inR[i] : 0.f;
+	for (int ch = 0; ch < kNumChannels; ch++) {
+		const float* src = (in && (uint32_t) ch < numIn) ? in[ch] : nullptr;
+		if (src) {
+			for (uint32_t i = 0; i < frames; i++)
+				inter[kNumChannels * i + ch] = src[i];
+		}
+		else {
+			for (uint32_t i = 0; i < frames; i++)
+				inter[kNumChannels * i + ch] = 0.f;
+		}
 	}
 
 	float* outInter = inst->outInterleaved.data();
-	g_dawDriver->device.processBuffer(inter, 2, outInter, 2, (int) frames);
+	g_dawDriver->device.processBuffer(inter, kNumChannels, outInter, kNumChannels, (int) frames);
 
-	// De-interleave verso le uscite planari del DAW.
-	for (uint32_t ch = 0; ch < numOut && ch < 2; ch++) {
+	// Interleaved -> planare verso le uscite del DAW.
+	for (uint32_t ch = 0; ch < numOut && (int) ch < kNumChannels; ch++) {
 		float* dst = out ? out[ch] : nullptr;
 		if (!dst)
 			continue;
 		for (uint32_t i = 0; i < frames; i++)
-			dst[i] = outInter[2 * i + ch];
+			dst[i] = outInter[kNumChannels * i + ch];
 	}
 }
 

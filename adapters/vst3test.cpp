@@ -142,18 +142,25 @@ int main() {
 	std::printf("initialize()...\n");
 	CHECK(v3_cpp_obj_initialize(component, nullptr) == V3_OK, "initialize fallita");
 
-	// Bus dichiarati.
+	// Bus dichiarati. Deve combaciare con l'adapter: rackhost::kNumChannels/2 bus stereo per
+	// direzione (16 canali → 8 bus). Costante locale per non tirarci dentro rackhost.hpp.
+	const int32_t kStereoBuses = 8;
 	const int32_t numIn = v3_cpp_obj(component)->get_bus_count(component, V3_AUDIO, V3_INPUT);
 	const int32_t numOut = v3_cpp_obj(component)->get_bus_count(component, V3_AUDIO, V3_OUTPUT);
 	std::printf("bus audio: %d in, %d out\n", (int) numIn, (int) numOut);
-	CHECK(numIn == 1 && numOut == 1, "attesi 1 bus audio in e 1 out");
+	CHECK(numIn == kStereoBuses && numOut == kStereoBuses, "attesi kStereoBuses bus audio in e out");
 
 	for (int dir = 0; dir < 2; dir++) {
-		v3_bus_info binfo = {};
-		CHECK(v3_cpp_obj(component)->get_bus_info(component, V3_AUDIO, dir, 0, &binfo) == V3_OK,
-		      "get_bus_info fallita");
-		printUtf16(dir == V3_INPUT ? "  IN  bus 0: " : "  OUT bus 0: ", binfo.bus_name);
-		CHECK(binfo.channel_count == 2, "atteso un bus stereo");
+		for (int32_t b = 0; b < kStereoBuses; b++) {
+			v3_bus_info binfo = {};
+			CHECK(v3_cpp_obj(component)->get_bus_info(component, V3_AUDIO, dir, b, &binfo) == V3_OK,
+			      "get_bus_info fallita");
+			char label[32];
+			std::snprintf(label, sizeof(label),
+			              dir == V3_INPUT ? "  IN  bus %d: " : "  OUT bus %d: ", (int) b);
+			printUtf16(label, binfo.bus_name);
+			CHECK(binfo.channel_count == 2, "atteso un bus stereo");
+		}
 	}
 
 	// L'audio processor si ottiene interrogando il component (single component effect).
@@ -166,9 +173,10 @@ int main() {
 	CHECK(v3_cpp_obj(processor)->can_process_sample_size(processor, V3_SAMPLE_64) != V3_OK,
 	      "il processor accetta i 64 bit, ma non li implementa");
 
-	v3_speaker_arrangement stereo = V3_SPEAKER_L | V3_SPEAKER_R;
-	CHECK(v3_cpp_obj(processor)->set_bus_arrangements(processor, &stereo, 1, &stereo, 1) == V3_OK,
-	      "set_bus_arrangements stereo/stereo rifiutata");
+	std::vector<v3_speaker_arrangement> arr(kStereoBuses, V3_SPEAKER_L | V3_SPEAKER_R);
+	CHECK(v3_cpp_obj(processor)->set_bus_arrangements(
+	        processor, arr.data(), kStereoBuses, arr.data(), kStereoBuses) == V3_OK,
+	      "set_bus_arrangements 8x stereo rifiutata");
 
 	const int32_t kBlock = 512;
 	const double kSampleRate = 48000.0;
@@ -187,47 +195,60 @@ int main() {
 
 	std::printf("process() con seno 440Hz in ingresso (attendo il pass-through)...\n");
 
-	std::vector<float> inL(kBlock), inR(kBlock), outL(kBlock), outR(kBlock);
-	float* inChannels[2] = { inL.data(), inR.data() };
-	float* outChannels[2] = { outL.data(), outR.data() };
+	// Un buffer L/R per ciascuno degli 8 bus, in ingresso e in uscita: presentiamo all'host
+	// TUTTI i bus (come farebbe un DAW multi-out reale). Solo il bus 0 riceve il seno; gli
+	// altri restano a zero. Il pass-through si legge dall'uscita del bus 0.
+	std::vector<float> inCh[kStereoBuses * 2];
+	std::vector<float> outCh[kStereoBuses * 2];
+	for (int c = 0; c < kStereoBuses * 2; c++) {
+		inCh[c].assign(kBlock, 0.f);
+		outCh[c].assign(kBlock, 0.f);
+	}
 
-	v3_audio_bus_buffers inBus = {};
-	inBus.num_channels = 2;
-	inBus.channel_buffers_32 = inChannels;
-
-	v3_audio_bus_buffers outBus = {};
-	outBus.num_channels = 2;
-	outBus.channel_buffers_32 = outChannels;
+	float* inPtrs[kStereoBuses][2];
+	float* outPtrs[kStereoBuses][2];
+	v3_audio_bus_buffers inBuses[kStereoBuses] = {};
+	v3_audio_bus_buffers outBuses[kStereoBuses] = {};
+	for (int b = 0; b < kStereoBuses; b++) {
+		inPtrs[b][0] = inCh[b * 2 + 0].data();
+		inPtrs[b][1] = inCh[b * 2 + 1].data();
+		outPtrs[b][0] = outCh[b * 2 + 0].data();
+		outPtrs[b][1] = outCh[b * 2 + 1].data();
+		inBuses[b].num_channels = 2;
+		inBuses[b].channel_buffers_32 = inPtrs[b];
+		outBuses[b].num_channels = 2;
+		outBuses[b].channel_buffers_32 = outPtrs[b];
+	}
 
 	double phase = 0.0;
 	const double phaseInc = 2.0 * 3.14159265358979323846 * 440.0 / kSampleRate;
 	double maxRms = 0.0;
 
 	for (int block = 0; block < 24; block++) {
-		// Seno continuo di ampiezza 0.5 su entrambi i canali.
+		// Seno continuo di ampiezza 0.5 sui due canali del bus 0.
 		for (int i = 0; i < kBlock; i++) {
 			const float s = (float)(0.5 * std::sin(phase));
-			inL[i] = s;
-			inR[i] = s;
+			inCh[0][i] = s;
+			inCh[1][i] = s;
 			phase += phaseInc;
 		}
-		std::fill(outL.begin(), outL.end(), 0.f);
-		std::fill(outR.begin(), outR.end(), 0.f);
+		for (int c = 0; c < kStereoBuses * 2; c++)
+			std::fill(outCh[c].begin(), outCh[c].end(), 0.f);
 
 		v3_process_data data = {};
 		data.process_mode = V3_REALTIME;
 		data.symbolic_sample_size = V3_SAMPLE_32;
 		data.nframes = kBlock;
-		data.num_input_buses = 1;
-		data.num_output_buses = 1;
-		data.inputs = &inBus;
-		data.outputs = &outBus;
+		data.num_input_buses = kStereoBuses;
+		data.num_output_buses = kStereoBuses;
+		data.inputs = inBuses;
+		data.outputs = outBuses;
 
 		const v3_result res = v3_cpp_obj(processor)->process(processor, &data);
 
 		double sum = 0.0;
 		for (int i = 0; i < kBlock; i++)
-			sum += (double) outL[i] * outL[i];
+			sum += (double) outCh[0][i] * outCh[0][i];
 		const double rms = std::sqrt(sum / kBlock);
 		if (rms > maxRms)
 			maxRms = rms;
