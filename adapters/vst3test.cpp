@@ -20,6 +20,7 @@
 #include <cstring>
 #include <cmath>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <windows.h>
@@ -57,6 +58,147 @@ static void printUtf16(const char* label, const int16_t* s) {
 		std::putchar((char) s[i]);
 	std::putchar('\n');
 }
+
+
+// Finto IEventList dell'host, per testare il ponte MIDI. Mima l'event list che un DAW passa
+// in process_data.input_events: espone un piccolo array di v3_event. Layout ABI come gli
+// oggetti dell'adapter — [funknown][metodi] — consegnato al plugin come T** (vedi l'idioma
+// in testa a vst3.cpp).
+struct TestEventList : v3_event_list_cpp {
+	const std::vector<v3_event>* events;
+
+	static v3_result V3_API queryInterface(void* self, const v3_tuid iid, void** iface) {
+		if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_event_list_iid)) {
+			*iface = self;
+			return V3_OK;
+		}
+		*iface = nullptr;
+		return V3_NO_INTERFACE;
+	}
+	static uint32_t V3_API refFn(void*) {
+		return 1;
+	}
+	static uint32_t V3_API unrefFn(void*) {
+		return 1;
+	}
+	static uint32_t V3_API getEventCount(void* self) {
+		TestEventList* o = *static_cast<TestEventList**>(self);
+		return (uint32_t) o->events->size();
+	}
+	static v3_result V3_API getEvent(void* self, int32_t idx, v3_event* event) {
+		TestEventList* o = *static_cast<TestEventList**>(self);
+		if (idx < 0 || (size_t) idx >= o->events->size())
+			return V3_INVALID_ARG;
+		*event = (*o->events)[idx];
+		return V3_OK;
+	}
+	static v3_result V3_API addEvent(void*, v3_event*) {
+		return V3_NOT_IMPLEMENTED;
+	}
+
+	explicit TestEventList(const std::vector<v3_event>* evs) : events(evs) {
+		query_interface = queryInterface;
+		ref = refFn;
+		unref = unrefFn;
+		list.get_event_count = getEventCount;
+		list.get_event = getEvent;
+		list.add_event = addEvent;
+	}
+};
+
+
+// Finta coda di valori di UN parametro (IParamValueQueue): un id + una lista di punti
+// (sample offset, valore normalizzato). Serve a simulare CC/pitch-bend che l'host manda come
+// parameter change. Stessa idea ABI di TestEventList.
+struct TestParamQueue : v3_param_value_queue_cpp {
+	v3_param_id id;
+	std::vector<std::pair<int32_t, double>> points;
+
+	static v3_result V3_API queryInterface(void* self, const v3_tuid iid, void** iface) {
+		if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_param_value_queue_iid)) {
+			*iface = self;
+			return V3_OK;
+		}
+		*iface = nullptr;
+		return V3_NO_INTERFACE;
+	}
+	static uint32_t V3_API refFn(void*) {
+		return 1;
+	}
+	static uint32_t V3_API unrefFn(void*) {
+		return 1;
+	}
+	static v3_param_id V3_API getParamId(void* self) {
+		return (*static_cast<TestParamQueue**>(self))->id;
+	}
+	static int32_t V3_API getPointCount(void* self) {
+		return (int32_t)(*static_cast<TestParamQueue**>(self))->points.size();
+	}
+	static v3_result V3_API getPoint(void* self, int32_t idx, int32_t* sampleOffset, double* value) {
+		TestParamQueue* o = *static_cast<TestParamQueue**>(self);
+		if (idx < 0 || (size_t) idx >= o->points.size())
+			return V3_INVALID_ARG;
+		*sampleOffset = o->points[idx].first;
+		*value = o->points[idx].second;
+		return V3_OK;
+	}
+	static v3_result V3_API addPoint(void*, int32_t, double, int32_t*) {
+		return V3_NOT_IMPLEMENTED;
+	}
+
+	TestParamQueue(v3_param_id pid, std::vector<std::pair<int32_t, double>> pts)
+		: id(pid), points(std::move(pts)) {
+		query_interface = queryInterface;
+		ref = refFn;
+		unref = unrefFn;
+		queue.get_param_id = getParamId;
+		queue.get_point_count = getPointCount;
+		queue.get_point = getPoint;
+		queue.add_point = addPoint;
+	}
+};
+
+
+// Finto IParameterChanges che espone UNA sola coda di parametro (basta per il test).
+struct TestParamChanges : v3_param_changes_cpp {
+	TestParamQueue* queue; // consegnato all'host come (v3_param_value_queue**) &queue
+
+	static v3_result V3_API queryInterface(void* self, const v3_tuid iid, void** iface) {
+		if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_param_changes_iid)) {
+			*iface = self;
+			return V3_OK;
+		}
+		*iface = nullptr;
+		return V3_NO_INTERFACE;
+	}
+	static uint32_t V3_API refFn(void*) {
+		return 1;
+	}
+	static uint32_t V3_API unrefFn(void*) {
+		return 1;
+	}
+	static int32_t V3_API getParamCount(void*) {
+		return 1;
+	}
+	static v3_param_value_queue** V3_API getParamData(void* self, int32_t idx) {
+		TestParamChanges* o = *static_cast<TestParamChanges**>(self);
+		if (idx != 0)
+			return nullptr;
+		return (v3_param_value_queue**) &o->queue;
+	}
+	static v3_param_value_queue** V3_API addParamData(void*, const v3_param_id*, int32_t*) {
+		return nullptr;
+	}
+
+	explicit TestParamChanges(TestParamQueue* q) : queue(q) {
+		query_interface = queryInterface;
+		ref = refFn;
+		unref = unrefFn;
+		changes.get_param_count = getParamCount;
+		changes.get_param_data = getParamData;
+		changes.add_param_data = addParamData;
+	}
+};
 
 
 int main() {
@@ -263,6 +405,116 @@ int main() {
 	else
 		std::printf("ATTENZIONE: uscita silenziosa, il pass-through non ha prodotto segnale.\n");
 
+	// --- ponte MIDI: eventi VST3 -> driver "DAW" --------------------------------------
+	// L'adapter dichiara un event input bus e traduce gli eventi in messaggi MIDI grezzi che
+	// spinge nel driver "DAW". Qui simuliamo un DAW che manda note-on/note-off e verifichiamo,
+	// via il simbolo di debug esportato, che siano arrivati al driver. Nessun modulo MIDI è
+	// sottoscritto (è l'utente a instradarli): il contatore sale comunque a monte del device.
+	std::printf("MIDI: invio note-on/note-off via IEventList...\n");
+	// Il simbolo di debug vive nell'ADAPTER (RackVst3Adapter.dll), non nello stub che abbiamo
+	// caricato: InitDll ha già caricato l'adapter nel processo, quindi ne prendiamo l'handle
+	// per nome (GetModuleHandle non incrementa il refcount, ma il modulo resta vivo).
+	typedef uint64_t (*MidiCountFn)(void);
+	HMODULE adapter = GetModuleHandleW(L"RackVst3Adapter.dll");
+	CHECK(adapter, "RackVst3Adapter.dll non risulta caricato");
+	MidiCountFn midiCount = (MidiCountFn)(void*) GetProcAddress(adapter, "MetarackDebugMidiCount");
+	CHECK(midiCount, "simbolo MetarackDebugMidiCount non trovato");
+
+	std::vector<v3_event> events;
+	v3_event noteOn = {};
+	noteOn.type = V3_EVENT_NOTE_ON;
+	noteOn.sample_offset = 0;
+	noteOn.note_on.channel = 0;
+	noteOn.note_on.pitch = 60;      // C4
+	noteOn.note_on.velocity = 0.8f;
+	events.push_back(noteOn);
+	v3_event noteOff = {};
+	noteOff.type = V3_EVENT_NOTE_OFF;
+	noteOff.sample_offset = 128;    // a metà blocco: verifica il timestamp sample-accurate
+	noteOff.note_off.channel = 0;
+	noteOff.note_off.pitch = 60;
+	noteOff.note_off.velocity = 0.f;
+	events.push_back(noteOff);
+
+	TestEventList evList(&events);
+	TestEventList* evListPtr = &evList;
+
+	const uint64_t midiBefore = midiCount();
+
+	for (int c = 0; c < kStereoBuses * 2; c++)
+		std::fill(outCh[c].begin(), outCh[c].end(), 0.f);
+	v3_process_data mdata = {};
+	mdata.process_mode = V3_REALTIME;
+	mdata.symbolic_sample_size = V3_SAMPLE_32;
+	mdata.nframes = kBlock;
+	mdata.num_input_buses = kStereoBuses;
+	mdata.num_output_buses = kStereoBuses;
+	mdata.inputs = inBuses;
+	mdata.outputs = outBuses;
+	mdata.input_events = (v3_event_list**) &evListPtr;
+	const v3_result midiRes = v3_cpp_obj(processor)->process(processor, &mdata);
+
+	const uint64_t midiDelta = midiCount() - midiBefore;
+	std::printf("  process res=%d, messaggi MIDI ricevuti dal driver: %llu (attesi 2)\n",
+	            (int) midiRes, (unsigned long long) midiDelta);
+	const bool midiOk = (midiDelta == 2);
+	if (midiOk)
+		std::printf("MIDI OK: gli eventi VST3 sono arrivati al driver \"DAW\".\n");
+	else
+		std::printf("ATTENZIONE: il ponte MIDI non ha consegnato gli eventi attesi.\n");
+
+	// --- pitch-bend: parameter change via IMidiMapping --------------------------------
+	// CC/pitch-bend NON arrivano come eventi: l'host li manda come parameter change sugli id
+	// che il plugin dichiara via IMidiMapping. Verifichiamo la mappatura e che un pitch-bend
+	// (param change) arrivi al driver.
+	std::printf("MIDI: pitch-bend come parameter change (IMidiMapping)...\n");
+	v3_edit_controller** midiCtrl = nullptr;
+	v3_cpp_obj_query_interface(component, v3_edit_controller_iid, &midiCtrl);
+	CHECK(midiCtrl, "il component non espone IEditController per il MIDI mapping");
+	CHECK(v3_cpp_obj(midiCtrl)->get_parameter_count(midiCtrl) == 130 * 16,
+	      "atteso 130*16 parametri MIDI (CC/pitch-bend/aftertouch)");
+
+	v3_midi_mapping** mapping = nullptr;
+	v3_cpp_obj_query_interface(midiCtrl, v3_midi_mapping_iid, &mapping);
+	CHECK(mapping, "il controller non espone IMidiMapping");
+	// Pitch-bend sul canale 0: controller 129 -> id parametro 0*130+129 = 129.
+	v3_param_id pbId = 0xffffffff;
+	CHECK(v3_cpp_obj(mapping)->get_midi_controller_assignment(mapping, 0, 0, 129, &pbId) == V3_TRUE
+	      && pbId == 129, "get_midi_controller_assignment del pitch-bend non torna l'id atteso");
+
+	// 0.75 normalizzato -> bend verso l'alto. Una coda di un solo punto a offset 0.
+	TestParamQueue pbQueue(pbId, { { 0, 0.75 } });
+	TestParamQueue* pbQueuePtr = &pbQueue;
+	(void) pbQueuePtr; // il puntatore vive dentro TestParamChanges via &queue
+	TestParamChanges pbChanges(&pbQueue);
+	TestParamChanges* pbChangesPtr = &pbChanges;
+
+	const uint64_t pbBefore = midiCount();
+	for (int c = 0; c < kStereoBuses * 2; c++)
+		std::fill(outCh[c].begin(), outCh[c].end(), 0.f);
+	v3_process_data pbData = {};
+	pbData.process_mode = V3_REALTIME;
+	pbData.symbolic_sample_size = V3_SAMPLE_32;
+	pbData.nframes = kBlock;
+	pbData.num_input_buses = kStereoBuses;
+	pbData.num_output_buses = kStereoBuses;
+	pbData.inputs = inBuses;
+	pbData.outputs = outBuses;
+	pbData.input_params = (v3_param_changes**) &pbChangesPtr;
+	const v3_result pbRes = v3_cpp_obj(processor)->process(processor, &pbData);
+
+	const uint64_t pbDelta = midiCount() - pbBefore;
+	std::printf("  process res=%d, messaggi da parameter change: %llu (atteso 1: il pitch-bend)\n",
+	            (int) pbRes, (unsigned long long) pbDelta);
+	const bool pbOk = (pbDelta == 1);
+	if (pbOk)
+		std::printf("PITCH-BEND OK: il parameter change è arrivato al driver \"DAW\".\n");
+	else
+		std::printf("ATTENZIONE: il pitch-bend non ha raggiunto il driver.\n");
+
+	v3_cpp_obj_unref(mapping);
+	v3_cpp_obj_unref(midiCtrl);
+
 	// --- GUI: edit controller + plug view ---------------------------------------------
 	// Single component effect: il controller si ottiene dal component, non da una classe
 	// separata della factory.
@@ -270,8 +522,9 @@ int main() {
 	v3_edit_controller** controller = nullptr;
 	v3_cpp_obj_query_interface(component, v3_edit_controller_iid, &controller);
 	CHECK(controller, "il component non espone IEditController");
-	CHECK(v3_cpp_obj(controller)->get_parameter_count(controller) == 0,
-	      "atteso nessun parametro automatizzabile");
+	// Gli unici parametri sono i controller MIDI nascosti (CC/pitch-bend/aftertouch): 130*16.
+	CHECK(v3_cpp_obj(controller)->get_parameter_count(controller) == 130 * 16,
+	      "attesi 130*16 parametri MIDI (nessuna manopola del rack)");
 
 	std::printf("create_view(\"editor\")...\n");
 	v3_plugin_view** view = v3_cpp_obj(controller)->create_view(controller, "editor");
@@ -317,7 +570,7 @@ int main() {
 		exitDll();
 
 	std::printf("== OK: ciclo di vita VST3 completato senza crash ==\n");
-	return passthrough ? 0 : 3;
+	return (passthrough && midiOk && pbOk) ? 0 : 3;
 }
 
 

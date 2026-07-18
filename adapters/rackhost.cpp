@@ -5,6 +5,7 @@
 
 #include "rackhost.hpp"
 
+#include <atomic>
 #include <cstring>
 #include <mutex>
 
@@ -140,6 +141,60 @@ struct DawDriver : audio::Driver {
 };
 
 DawDriver* g_dawDriver = nullptr;
+
+
+// =====================================================================================
+// Driver MIDI "DAW"
+// =====================================================================================
+//
+// Gemello MIDI del driver audio qui sopra. Un solo InputDevice (id 0, nome "DAW"): l'utente
+// lo seleziona da un modulo Core MIDI nella finestra accessibile e, quando l'adapter riceve
+// eventi dall'host, pushMidiMessage() li inoltra a questo device -> ai moduli sottoscritti.
+// Solo INPUT (DAW -> Rack): niente device di output, la direzione opposta non serve al task.
+// Come l'audio è MONO-ISTANZA: un unico device globale per l'intero processo.
+
+const int DAW_MIDI_DRIVER_ID = 0x444D4921; // "DMI!" — id stabile, distinto da DAW audio e loopback
+
+struct DawMidiDevice : midi::InputDevice {
+	std::string getName() override {
+		return "DAW";
+	}
+};
+
+struct DawMidiDriver : midi::Driver {
+	DawMidiDevice device;
+
+	std::string getName() override {
+		return "DAW";
+	}
+	std::vector<int> getInputDeviceIds() override {
+		return { 0 };
+	}
+	int getDefaultInputDeviceId() override {
+		return 0;
+	}
+	std::string getInputDeviceName(int deviceId) override {
+		return (deviceId == 0) ? "DAW" : "";
+	}
+	midi::InputDevice* subscribeInput(int deviceId, midi::Input* input) override {
+		if (deviceId != 0)
+			return nullptr;
+		device.subscribe(input); // base InputDevice::subscribe: aggiunge al set di Input
+		return &device;
+	}
+	void unsubscribeInput(int deviceId, midi::Input* input) override {
+		if (deviceId != 0)
+			return;
+		device.unsubscribe(input);
+	}
+	// Nessun device di output: getOutputDeviceIds() eredita il default vuoto della base.
+};
+
+DawMidiDriver* g_dawMidiDriver = nullptr;
+
+// Contatore dei messaggi MIDI ricevuti dal DAW (vedi debugMidiMessageCount in rackhost.hpp).
+// Atomico perché letto dall'harness di test mentre il thread audio lo incrementa.
+std::atomic<uint64_t> g_dawMidiCount{0};
 
 
 // =====================================================================================
@@ -369,6 +424,10 @@ bool processInit(const char* logName) {
 	g_dawDriver = new DawDriver;
 	audio::addDriver(DAW_DRIVER_ID, g_dawDriver);
 	midi::init();
+	// Registra il nostro driver MIDI "DAW" (gemello del driver audio). midi::addDriver prende
+	// possesso del puntatore (midi::destroy lo eliminerà).
+	g_dawMidiDriver = new DawMidiDriver;
+	midi::addDriver(DAW_MIDI_DRIVER_ID, g_dawMidiDriver);
 	midiloopback::init();
 	plugin::init();
 	// Browser e library alimentano la vista LIBRARY della finestra accessibile (fuzzy
@@ -387,7 +446,8 @@ void processDeinit() {
 	// sovrascrivere quelle dello standalone dell'utente.
 	library::destroy();
 	plugin::destroy();
-	midi::destroy();
+	midi::destroy(); // elimina anche g_dawMidiDriver (ne aveva preso possesso addDriver)
+	g_dawMidiDriver = nullptr;
 	audio::destroy();
 	network::destroy();
 	settings::destroy();
@@ -590,6 +650,36 @@ void processPlanar(Instance* inst, const float* const* in, uint32_t numIn,
 		for (uint32_t i = 0; i < frames; i++)
 			dst[i] = outInter[kNumChannels * i + ch];
 	}
+}
+
+
+void pushMidiMessage(Instance* inst, const uint8_t* bytes, int len, int32_t sampleOffset) {
+	if (!g_dawMidiDriver || !bytes || len <= 0)
+		return;
+	useContext(inst);
+
+	// Timestamp assoluto in frame dell'engine. getFrame() qui (prima di stepBlock) è il frame
+	// d'inizio blocco; sommando l'offset otteniamo il campione esatto in cui il modulo Core
+	// MIDI rilascerà il messaggio dalla sua InputQueue (tryPop confronta con args.frame).
+	int64_t frame = APP->engine->getFrame() + (sampleOffset > 0 ? sampleOffset : 0);
+
+	midi::Message msg;
+	// bytes parte a size 3 (vedi midi::Message): assign non rialloca per i messaggi a 3 byte
+	// (note, aftertouch), quindi sul thread audio non allochiamo nel caso comune. Solo un
+	// SysEx più lungo di 3 byte causerebbe una realloc.
+	msg.bytes.assign(bytes, bytes + len);
+	msg.setFrame(frame);
+
+	// onMessage inoltra a tutti gli Input sottoscritti (con filtro di canale). Se nessun
+	// modulo è collegato al device "DAW", il messaggio si perde qui: è corretto, sta all'utente
+	// instradarlo. Il contatore sale comunque, così l'harness verifica il ponte a monte.
+	g_dawMidiCount.fetch_add(1, std::memory_order_relaxed);
+	g_dawMidiDriver->device.onMessage(msg);
+}
+
+
+uint64_t debugMidiMessageCount() {
+	return g_dawMidiCount.load(std::memory_order_relaxed);
 }
 
 

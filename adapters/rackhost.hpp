@@ -97,6 +97,26 @@ void deactivate(Instance* inst);
 void processPlanar(Instance* inst, const float* const* in, uint32_t numIn,
                    float* const* out, uint32_t numOut, uint32_t frames);
 
+
+// --- MIDI dal DAW ---------------------------------------------------------------------
+//
+// Simmetrico al ponte audio: processInit() registra un driver MIDI "DAW" con un solo
+// InputDevice (mono-istanza). L'utente aggiunge un modulo Core MIDI nel rack e ne seleziona
+// il device "DAW" dalla finestra accessibile; da lì in poi gli eventi che l'adapter riceve
+// dall'host finiscono in quel modulo.
+//
+// `bytes`/`len` sono UN messaggio MIDI grezzo (status + dati). `sampleOffset` è l'offset in
+// campioni dell'evento dentro il blocco corrente: il messaggio viene timestampato con
+// engine->getFrame() + sampleOffset, così è sample-accurate. CHIAMARE PRIMA di
+// processPlanar(): getFrame() vale allora il frame d'inizio blocco, e lo stepBlock() che
+// processPlanar avvia consuma il messaggio nello stesso blocco.
+void pushMidiMessage(Instance* inst, const uint8_t* bytes, int len, int32_t sampleOffset);
+
+// Contatore di processo dei messaggi MIDI ricevuti dal DAW. Serve SOLO all'harness di test
+// (vst3test) per verificare il ponte MIDI senza un modulo sottoscritto: pushMidiMessage lo
+// incrementa comunque, anche quando nessun Input è collegato al device.
+uint64_t debugMidiMessageCount();
+
 #if defined ARCH_WIN
 	// --- finestra accessibile -------------------------------------------------------------
 	// La finestra è top-level e vive quanto l'istanza: queste sono un telecomando show/hide.

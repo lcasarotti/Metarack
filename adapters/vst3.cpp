@@ -61,6 +61,16 @@ const char* const kSubCategories = "Instrument|Fx|Stereo";
 // clap.cpp (là come porte CLAP), qui come bus VST3.
 constexpr int32_t kStereoBuses = rackhost::kNumChannels / 2;
 
+// MIDI-CC come parametri VST3. VST3 non trasporta CC / pitch-bend / channel-pressure come
+// EVENTI (a differenza delle note): li instrada come PARAMETER CHANGE, dopo che il plugin ha
+// mappato (canale, controller) -> id parametro via IMidiMapping. Layout mutuato da DPF:
+// 130 controller per canale — 0..127 = CC, 128 = channel pressure (aftertouch), 129 =
+// pitch-bend — su 16 canali. id parametro = canale * 130 + controller. Sono gli UNICI
+// parametri che esponiamo (un rack non si espone come manopole automatizzabili), quindi
+// l'id parametro è direttamente questo indice, senza offset.
+constexpr int32_t kMidiControllersPerChannel = 130;
+constexpr int32_t kMidiCCParamCount = kMidiControllersPerChannel * 16; // 2080
+
 
 // Copia una stringa ASCII in un campo UTF-16 di dimensione fissa (v3_str_128 e i campi
 // "unicode" della factory v3), terminata a zero.
@@ -134,18 +144,42 @@ struct RackPlugView : v3_plugin_view_cpp {
 
 
 // =====================================================================================
+// MIDI mapping — IMidiMapping, tearoff del controller
+// =====================================================================================
+//
+// L'unica via per cui l'host ci manda CC / pitch-bend / channel-pressure. get_midi_controller_
+// assignment traduce (bus, canale, controller) nell'id del parametro nascosto corrispondente
+// (vedi kMidiControllersPerChannel). Oggetto minuscolo e stateless, posseduto dal controller.
+
+struct RackMidiMapping : v3_midi_mapping_cpp {
+	std::atomic_int refcounter;
+
+	RackMidiMapping();
+
+	static v3_result V3_API queryInterface(void* self, const v3_tuid iid, void** iface);
+	static uint32_t V3_API refFn(void* self);
+	static uint32_t V3_API unrefFn(void* self);
+
+	static v3_result V3_API getMidiControllerAssignment(void* self, int32_t bus, int16_t channel,
+	    int16_t cc, v3_param_id* id);
+};
+
+
+// =====================================================================================
 // Edit controller — tearoff del component
 // =====================================================================================
 //
-// Non abbiamo parametri automatizzabili (un rack non si espone come manopole VST3), quindi
-// il controller esiste solo per una ragione: dare all'host un create_view() da cui aprire
-// la GUI.
+// Due ragioni per esistere: dare all'host un create_view() da cui aprire la GUI, ed esporre
+// i parametri MIDI-CC + IMidiMapping così che l'host instradi qui CC/pitch-bend/aftertouch
+// (i soli "parametri" che dichiariamo: vedi kMidiControllersPerChannel).
 
 struct RackEditController : v3_edit_controller_cpp {
 	std::atomic_int refcounter;
 	RackComponent* component;
+	RackMidiMapping* midiMapping = nullptr; // creato pigramente, posseduto qui
 
 	RackEditController(RackComponent* c);
+	~RackEditController();
 
 	static v3_result V3_API queryInterface(void* self, const v3_tuid iid, void** iface);
 	static uint32_t V3_API refFn(void* self);
@@ -473,7 +507,54 @@ v3_result V3_API RackPlugView::checkSizeConstraint(void* /*self*/, v3_view_rect*
 }
 
 
+// --- midi mapping: implementazione -----------------------------------------------------
+
+RackMidiMapping::RackMidiMapping() : refcounter(1) {
+	// v3_funknown
+	query_interface = queryInterface;
+	ref = refFn;
+	unref = unrefFn;
+	// v3_midi_mapping
+	map.get_midi_controller_assignment = getMidiControllerAssignment;
+}
+
+v3_result V3_API RackMidiMapping::queryInterface(void* self, const v3_tuid iid, void** iface) {
+	RackMidiMapping* m = *static_cast<RackMidiMapping**>(self);
+	if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_midi_mapping_iid)) {
+		++m->refcounter;
+		*iface = self;
+		return V3_OK;
+	}
+	*iface = nullptr;
+	return V3_NO_INTERFACE;
+}
+
+uint32_t V3_API RackMidiMapping::refFn(void* self) {
+	return ++(*static_cast<RackMidiMapping**>(self))->refcounter;
+}
+
+uint32_t V3_API RackMidiMapping::unrefFn(void* self) {
+	// Tearoff: il controller è il proprietario, qui non si distrugge nulla.
+	return --(*static_cast<RackMidiMapping**>(self))->refcounter;
+}
+
+v3_result V3_API RackMidiMapping::getMidiControllerAssignment(void* /*self*/, int32_t bus,
+    int16_t channel, int16_t cc, v3_param_id* id) {
+	// Un solo event bus (bus 0). cc 0..129: 0..127 = CC, 128 = channel pressure, 129 = pitch-
+	// bend. L'host chiama questo a init per costruire la mappa MIDI->parametri.
+	if (bus != 0 || channel < 0 || channel >= 16 || cc < 0 || cc >= kMidiControllersPerChannel)
+		return V3_FALSE;
+	*id = (v3_param_id)(channel * kMidiControllersPerChannel + cc);
+	return V3_TRUE;
+}
+
+
 // --- edit controller: implementazione --------------------------------------------------
+
+RackEditController::~RackEditController() {
+	delete midiMapping;
+	midiMapping = nullptr;
+}
 
 RackEditController::RackEditController(RackComponent* c) : refcounter(1), component(c) {
 	// v3_funknown
@@ -505,6 +586,15 @@ v3_result V3_API RackEditController::queryInterface(void* self, const v3_tuid ii
 	    || v3_tuid_match(iid, v3_edit_controller_iid)) {
 		++c->refcounter;
 		*iface = self;
+		return V3_OK;
+	}
+	if (v3_tuid_match(iid, v3_midi_mapping_iid)) {
+		// Il membro puntatore è esso stesso il T** da consegnare (vedi l'idioma in testa).
+		if (!c->midiMapping)
+			c->midiMapping = new RackMidiMapping;
+		else
+			++c->midiMapping->refcounter;
+		*iface = &c->midiMapping;
 		return V3_OK;
 	}
 	*iface = nullptr;
@@ -542,18 +632,45 @@ v3_result V3_API RackEditController::getState(void* /*self*/, v3_bstream** /*str
 }
 
 int32_t V3_API RackEditController::getParameterCount(void* /*self*/) {
-	// Un rack non si espone come manopole automatizzabili dall'host.
-	return 0;
+	// Gli UNICI parametri sono i controller MIDI (CC/pitch-bend/aftertouch): non manopole del
+	// rack, ma il canale che l'host usa per instradarci quei controller (vedi IMidiMapping).
+	return kMidiCCParamCount;
 }
 
-v3_result V3_API RackEditController::getParameterInfo(void* /*self*/, int32_t /*paramIdx*/,
-    v3_param_info* /*info*/) {
-	return V3_INVALID_ARG;
+v3_result V3_API RackEditController::getParameterInfo(void* /*self*/, int32_t paramIdx,
+    v3_param_info* info) {
+	if (paramIdx < 0 || paramIdx >= kMidiCCParamCount)
+		return V3_INVALID_ARG;
+	std::memset(info, 0, sizeof(*info));
+	const int32_t channel = paramIdx / kMidiControllersPerChannel;
+	const int32_t cc = paramIdx % kMidiControllersPerChannel;
+	info->param_id = (v3_param_id) paramIdx;
+	// HIDDEN: servono solo perché l'host instradi qui il MIDI via IMidiMapping, non per
+	// l'automazione manuale — il flag li tiene fuori dalla lista parametri mostrata all'utente.
+	info->flags = V3_PARAM_CAN_AUTOMATE | V3_PARAM_IS_HIDDEN;
+	info->step_count = 127;
+	// Pitch-bend a riposo = centro (0.5); CC e aftertouch a riposo = 0.
+	info->default_normalised_value = (cc == 129) ? 0.5 : 0.0;
+	char name[32];
+	if (cc == 128)
+		std::snprintf(name, sizeof(name), "MIDI Ch.%d Pressure", channel + 1);
+	else if (cc == 129)
+		std::snprintf(name, sizeof(name), "MIDI Ch.%d PitchBend", channel + 1);
+	else
+		std::snprintf(name, sizeof(name), "MIDI Ch.%d CC%d", channel + 1, cc);
+	copyUtf16(info->title, name, sizeof(info->title) / sizeof(info->title[0]));
+	copyUtf16(info->short_title, name, sizeof(info->short_title) / sizeof(info->short_title[0]));
+	return V3_OK;
 }
 
-v3_result V3_API RackEditController::getParameterStringForValue(void* /*self*/, v3_param_id /*id*/,
-    double /*normalised*/, v3_str_128 /*output*/) {
-	return V3_INVALID_ARG;
+v3_result V3_API RackEditController::getParameterStringForValue(void* /*self*/, v3_param_id id,
+    double /*normalised*/, v3_str_128 output) {
+	// Parametri MIDI nascosti: nessuna stringa utile, ma rispondiamo OK con stringa vuota per
+	// gli id validi così l'host non tratta la chiamata come errore.
+	if (id >= (v3_param_id) kMidiCCParamCount)
+		return V3_INVALID_ARG;
+	output[0] = 0;
+	return V3_OK;
 }
 
 v3_result V3_API RackEditController::getParameterValueForString(void* /*self*/, v3_param_id /*id*/,
@@ -571,13 +688,19 @@ double V3_API RackEditController::plainParameterToNormalised(void* /*self*/, v3_
 	return plain;
 }
 
-double V3_API RackEditController::getParameterNormalised(void* /*self*/, v3_param_id /*id*/) {
+double V3_API RackEditController::getParameterNormalised(void* /*self*/, v3_param_id id) {
+	// Non teniamo una cache: i valori MIDI li consumiamo dal process data (input_params), non
+	// da qui. Rispondiamo con il valore a riposo — centro per il pitch-bend, 0 per gli altri.
+	if (id < (v3_param_id) kMidiCCParamCount && (id % kMidiControllersPerChannel) == 129)
+		return 0.5;
 	return 0.0;
 }
 
-v3_result V3_API RackEditController::setParameterNormalised(void* /*self*/, v3_param_id /*id*/,
+v3_result V3_API RackEditController::setParameterNormalised(void* /*self*/, v3_param_id id,
     double /*normalised*/) {
-	return V3_INVALID_ARG;
+	// Accettiamo la notifica dell'host (edit-controller sync) ma non la usiamo: l'audio legge i
+	// controller da input_params in process(). Rispondere V3_OK evita che l'host la creda fallita.
+	return (id < (v3_param_id) kMidiCCParamCount) ? V3_OK : V3_INVALID_ARG;
 }
 
 v3_result V3_API RackEditController::setComponentHandler(void* /*self*/,
@@ -685,6 +808,94 @@ v3_result V3_API RackAudioProcessor::setProcessing(void* /*self*/, v3_bool /*sta
 	return V3_OK;
 }
 
+// Converte un evento VST3 in messaggio(i) MIDI grezzi e lo spinge nel driver "DAW".
+// VST3 non trasporta MIDI grezzo: astrae le note in eventi strutturati (note_on/off,
+// poly_pressure) e i dati binari in V3_EVENT_DATA (SysEx). Qui li ri-serializziamo nei byte
+// MIDI che i moduli Core di Rack capiscono.
+//
+// LIMITE NOTO: CC, pitch-bend e mod-wheel NON arrivano come eventi in VST3 — passano da
+// IMidiMapping (MIDI CC -> parametri) e da input_params, non ancora implementati. Per ora il
+// ponte copre note e aftertouch polifonico: sufficiente a SUONARE il rack dalla tastiera del
+// DAW. CC/PB sono una fase successiva.
+void pushVst3Event(rackhost::Instance* rack, const v3_event& ev) {
+	// velocità/pressione VST3 sono float 0..1; MIDI vuole 0..127. Arrotonda e satura.
+	auto to7bit = [](float v) -> uint8_t {
+		int x = (int)(v * 127.f + 0.5f);
+		return (uint8_t)(x < 0 ? 0 : (x > 127 ? 127 : x));
+	};
+	uint8_t msg[3];
+	switch (ev.type) {
+		case V3_EVENT_NOTE_ON:
+			msg[0] = (uint8_t)(0x90 | (ev.note_on.channel & 0x0f));
+			msg[1] = (uint8_t)(ev.note_on.pitch & 0x7f);
+			msg[2] = to7bit(ev.note_on.velocity);
+			rackhost::pushMidiMessage(rack, msg, 3, ev.sample_offset);
+			break;
+		case V3_EVENT_NOTE_OFF:
+			msg[0] = (uint8_t)(0x80 | (ev.note_off.channel & 0x0f));
+			msg[1] = (uint8_t)(ev.note_off.pitch & 0x7f);
+			msg[2] = to7bit(ev.note_off.velocity);
+			rackhost::pushMidiMessage(rack, msg, 3, ev.sample_offset);
+			break;
+		case V3_EVENT_POLY_PRESSURE:
+			msg[0] = (uint8_t)(0xA0 | (ev.poly_pressure.channel & 0x0f));
+			msg[1] = (uint8_t)(ev.poly_pressure.pitch & 0x7f);
+			msg[2] = to7bit(ev.poly_pressure.pressure);
+			rackhost::pushMidiMessage(rack, msg, 3, ev.sample_offset);
+			break;
+		case V3_EVENT_DATA:
+			// SysEx e simili: inoltra i byte grezzi così come sono.
+			if (ev.data.bytes && ev.data.size > 0)
+				rackhost::pushMidiMessage(rack, ev.data.bytes, (int) ev.data.size, ev.sample_offset);
+			break;
+		default:
+			// chord, scale, note-expression: non hanno un equivalente MIDI diretto, ignorati.
+			break;
+	}
+}
+
+// Converte un parameter change (MIDI CC/pitch-bend/aftertouch instradato dall'host via
+// IMidiMapping) nel messaggio MIDI grezzo corrispondente e lo spinge nel driver "DAW". `id` è
+// l'id parametro `canale*130 + controller`; `normalized` è 0..1. Inversa di DPF appendCC.
+void pushVst3ParamChange(rackhost::Instance* rack, uint32_t id, int32_t sampleOffset,
+                         double normalized) {
+	if (id >= (uint32_t) kMidiCCParamCount)
+		return;
+	const int channel = (int) id / kMidiControllersPerChannel;
+	const int cc = (int) id % kMidiControllersPerChannel;
+	if (normalized < 0.0)
+		normalized = 0.0;
+	if (normalized > 1.0)
+		normalized = 1.0;
+
+	uint8_t msg[3];
+	if (cc < 128) {
+		// Control change: [Bn, cc, valore 7-bit].
+		msg[0] = (uint8_t)(0xB0 | channel);
+		msg[1] = (uint8_t) cc;
+		msg[2] = (uint8_t)(int)(normalized * 127.0 + 0.5);
+		rackhost::pushMidiMessage(rack, msg, 3, sampleOffset);
+	}
+	else if (cc == 128) {
+		// Channel pressure (aftertouch di canale): messaggio a DUE byte [Dn, valore 7-bit].
+		msg[0] = (uint8_t)(0xD0 | channel);
+		msg[1] = (uint8_t)(int)(normalized * 127.0 + 0.5);
+		rackhost::pushMidiMessage(rack, msg, 2, sampleOffset);
+	}
+	else {
+		// Pitch-bend: valore a 14 bit, LSB poi MSB. [En, LSB, MSB]. 0.5 -> 8192 = centro.
+		int val14 = (int)(normalized * 16384.0);
+		if (val14 < 0)
+			val14 = 0;
+		if (val14 > 16383)
+			val14 = 16383; // 16384 traboccherebbe l'MSB a 128 (bit alto = byte MIDI non valido)
+		msg[0] = (uint8_t)(0xE0 | channel);
+		msg[1] = (uint8_t)(val14 & 0x7f);
+		msg[2] = (uint8_t)((val14 >> 7) & 0x7f);
+		rackhost::pushMidiMessage(rack, msg, 3, sampleOffset);
+	}
+}
+
 v3_result V3_API RackAudioProcessor::process(void* self, v3_process_data* data) {
 	RackAudioProcessor* p = *static_cast<RackAudioProcessor**>(self);
 	rackhost::Instance* rack = p->component->rack;
@@ -692,6 +903,45 @@ v3_result V3_API RackAudioProcessor::process(void* self, v3_process_data* data) 
 		return V3_NOT_INITIALIZED;
 	if (data->symbolic_sample_size != V3_SAMPLE_32)
 		return V3_FALSE;
+
+	// MIDI PRIMA dell'audio: pushMidiMessage timestampa con engine->getFrame() (= frame
+	// d'inizio blocco finché stepBlock non gira), quindi va spinto prima di processPlanar, che
+	// avvia lo stepBlock che consuma i messaggi in questo stesso blocco. L'event list è un
+	// oggetto dell'host: si chiama con l'idioma travesty v3_cpp_obj(handle)->m(handle).
+	if (data->input_events) {
+		v3_event_list** elist = data->input_events;
+		const uint32_t count = v3_cpp_obj(elist)->get_event_count(elist);
+		for (uint32_t i = 0; i < count; i++) {
+			v3_event ev;
+			if (v3_cpp_obj(elist)->get_event(elist, (int32_t) i, &ev) == V3_OK)
+				pushVst3Event(rack, ev);
+		}
+	}
+
+	// CC / pitch-bend / channel-pressure arrivano QUI, non come eventi: l'host li manda come
+	// parameter change sugli id mappati da IMidiMapping. Ogni coda di parametro può avere più
+	// punti (valori a offset di campione diversi nel blocco): li spingiamo tutti. La InputQueue
+	// del modulo Core MIDI riordina per frame, quindi non serve fondere con le note.
+	if (data->input_params) {
+		v3_param_changes** pchanges = data->input_params;
+		const int32_t pcount = v3_cpp_obj(pchanges)->get_param_count(pchanges);
+		for (int32_t i = 0; i < pcount; i++) {
+			v3_param_value_queue** queue = v3_cpp_obj(pchanges)->get_param_data(pchanges, i);
+			if (!queue)
+				continue;
+			const v3_param_id id = v3_cpp_obj(queue)->get_param_id(queue);
+			if (id >= (v3_param_id) kMidiCCParamCount)
+				continue; // non è uno dei nostri parametri MIDI
+			const int32_t points = v3_cpp_obj(queue)->get_point_count(queue);
+			for (int32_t j = 0; j < points; j++) {
+				int32_t offset = 0;
+				double normalized = 0.0;
+				if (v3_cpp_obj(queue)->get_point(queue, j, &offset, &normalized) != V3_OK)
+					break;
+				pushVst3ParamChange(rack, id, offset, normalized);
+			}
+		}
+	}
 
 	// VST3 usa buffer PLANARI (channel_buffers_32[canale][frame]) e un array per ogni bus.
 	// rackhost::processPlanar vuole invece UN array piatto di kNumChannels puntatori-per-
@@ -846,13 +1096,31 @@ v3_result V3_API RackComponent::setIoMode(void* /*self*/, int32_t /*ioMode*/) {
 	return V3_NOT_IMPLEMENTED;
 }
 
-int32_t V3_API RackComponent::getBusCount(void* /*self*/, int32_t mediaType, int32_t /*busDirection*/) {
-	// kStereoBuses bus audio stereo per direzione; niente bus di eventi (nessun MIDI in v1).
-	return (mediaType == V3_AUDIO) ? kStereoBuses : 0;
+int32_t V3_API RackComponent::getBusCount(void* /*self*/, int32_t mediaType, int32_t busDirection) {
+	// kStereoBuses bus audio stereo per direzione. Più UN bus di eventi in INGRESSO: il MIDI
+	// del DAW verso il rack. Nessun bus di eventi in uscita (Rack -> DAW MIDI non è nel task).
+	if (mediaType == V3_AUDIO)
+		return kStereoBuses;
+	if (mediaType == V3_EVENT)
+		return (busDirection == V3_INPUT) ? 1 : 0;
+	return 0;
 }
 
 v3_result V3_API RackComponent::getBusInfo(void* /*self*/, int32_t mediaType, int32_t busDirection,
     int32_t busIdx, v3_bus_info* info) {
+	// Bus di eventi: un solo bus MIDI in ingresso, 16 canali (i canali MIDI del device "DAW").
+	if (mediaType == V3_EVENT) {
+		if (busDirection != V3_INPUT || busIdx != 0)
+			return V3_INVALID_ARG;
+		std::memset(info, 0, sizeof(*info));
+		info->media_type = V3_EVENT;
+		info->direction = V3_INPUT;
+		info->channel_count = 16;
+		copyUtf16(info->bus_name, "MIDI In", sizeof(info->bus_name) / sizeof(info->bus_name[0]));
+		info->bus_type = V3_MAIN;
+		info->flags = V3_DEFAULT_ACTIVE;
+		return V3_OK;
+	}
 	if (mediaType != V3_AUDIO || busIdx < 0 || busIdx >= kStereoBuses)
 		return V3_INVALID_ARG;
 	std::memset(info, 0, sizeof(*info));
@@ -1045,6 +1313,12 @@ extern "C" {
 	__declspec(dllexport) const void* GetPluginFactory(void) {
 		// L'host riceve sempre un T**: qui il puntatore al singleton statico.
 		return &g_factoryPtr;
+	}
+
+	// Solo per l'harness di test (vst3test): quanti messaggi MIDI il driver "DAW" ha ricevuto
+	// dall'host. NON fa parte dell'ABI VST3 — un DAW non chiama mai questo simbolo.
+	__declspec(dllexport) uint64_t MetarackDebugMidiCount(void) {
+		return rackhost::debugMidiMessageCount();
 	}
 
 } // extern "C"
