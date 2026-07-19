@@ -11,7 +11,7 @@ compile_commands.json
 # Percorso legacy, in via di rimozione: vedi adapters/vst3/README.md
 /adapters/vst3/build
 # Bundle VST3 prodotto da `make vst3` (gli header travesty in adapters/vst3/ restano tracciati)
-/Rack.vst3
+/MetaRack.vst3
 
 # Binaries and build targets
 *.a

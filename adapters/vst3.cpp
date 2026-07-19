@@ -1,4 +1,4 @@
-// Adapter VST3 per VCV Rack (Metarack).
+// Adapter VST3 per VCV Rack (MetaRack).
 //
 // Questo file è solo il GUSCIO ABI: traduce il ciclo di vita VST3 in chiamate a rackhost,
 // il core condiviso con l'adapter CLAP (vedi adapters/rackhost.hpp). Tutta la logica di
@@ -49,8 +49,10 @@ namespace {
 // "Meta" "Rack" "Comp" "onen"
 constexpr v3_tuid g_classTuid = V3_ID(0x4D657461, 0x5261636B, 0x436F6D70, 0x6F6E656E);
 
-const char* const kPluginName = "Metarack";
-const char* const kVendor = "Metarack";
+// Nome mostrato nel browser del DAW e vendor/produttore. Coerenti con lo standalone:
+// il PRODOTTO è "MetaRack", l'autore/vendor è "Luca Casarotti" (come per la versione desktop).
+const char* const kPluginName = "MetaRack";
+const char* const kVendor = "Luca Casarotti";
 const char* const kVersion = "2.6.4";
 // Sub-categorie VST3: come il CLAP, ci dichiariamo sia strumento che effetto stereo.
 const char* const kSubCategories = "Instrument|Fx|Stereo";

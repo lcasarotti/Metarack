@@ -189,9 +189,10 @@ claptest: $(CLAPTEST_TARGET)
 VST3_SOURCES += adapters/vst3.cpp adapters/rackhost.cpp
 VST3_STUB_SOURCES += adapters/vst3stub.c
 ifdef ARCH_WIN
-	VST3_BUNDLE := Rack.vst3
+	VST3_BUNDLE := MetaRack.vst3
 	VST3_BUNDLE_DIR := $(VST3_BUNDLE)/Contents/x86_64-win
-	VST3_TARGET := $(VST3_BUNDLE_DIR)/Rack.vst3
+	# Su Windows il modulo dentro Contents/x86_64-win DEVE chiamarsi come il bundle.
+	VST3_TARGET := $(VST3_BUNDLE_DIR)/MetaRack.vst3
 	VST3_ADAPTER := $(VST3_BUNDLE_DIR)/RackVst3Adapter.dll
 	VST3_LDFLAGS += -shared
 	# Lo stub non deve dipendere da NESSUNA DLL affiancata, o il problema si riproporrebbe su
@@ -235,6 +236,27 @@ $(VST3TEST_TARGET): $(VST3TEST_SOURCES) $(VST3_TARGET)
 	$(CXX) $(CXXFLAGS) -o $@ $(VST3TEST_SOURCES) $(VST3TEST_LDFLAGS)
 
 vst3test: $(VST3TEST_TARGET)
+
+# Packaging: bundle VST3 AUTOSUFFICIENTE e RILOCABILE, pronto da installare in una qualunque
+# cartella VST3. Differenza da `make vst3` (che lascia il bundle in-tree e fa risalire
+# systemDir a C:\Rack): qui copiamo la res/ + Core.json &co. DENTRO Contents/Resources.
+# A runtime findPackagedResources() (rackhost.cpp) li trova nel bundle e punta userDir alla
+# libreria per-utente condivisa con lo standalone (%LOCALAPPDATA%\Rack2). Output in dist/,
+# così il bundle di sviluppo in C:\Rack resta pulito e leggero.
+VST3_DIST_BUNDLE := dist/$(VST3_BUNDLE)
+VST3_DIST_ARCH := $(VST3_DIST_BUNDLE)/Contents/x86_64-win
+VST3_DIST_RES := $(VST3_DIST_BUNDLE)/Contents/Resources
+
+vst3dist: vst3
+	rm -rf "$(VST3_DIST_BUNDLE)"
+	mkdir -p "$(VST3_DIST_ARCH)" "$(VST3_DIST_RES)"
+	# Binari: stub + adapter + libRack + runtime MinGW + nvdaControllerClient (già assemblati
+	# in Contents/x86_64-win da `make vst3`).
+	cp $(VST3_BUNDLE_DIR)/* "$(VST3_DIST_ARCH)/"
+	# systemDir del bundle: tutto ciò che lo standalone tiene nella radice Rack.
+	cp -R res translations "$(VST3_DIST_RES)/"
+	cp Core.json template.vcv cacert.pem "$(VST3_DIST_RES)/"
+	@echo "Bundle pacchettizzato pronto: $(VST3_DIST_BUNDLE)"
 
 # Convenience targets
 
@@ -507,4 +529,4 @@ cleandist:
 
 
 .DEFAULT_GOAL := all
-.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link spike clap claptest vst3 vst3test
+.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link spike clap claptest vst3 vst3test vst3dist

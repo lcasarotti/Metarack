@@ -251,6 +251,23 @@ std::string findSystemDir() {
 	return getModuleDir();
 }
 
+// Un bundle DISTRIBUITO (make vst3dist) porta la propria res/ + Core.json in
+// Contents/Resources, un livello sopra la cartella del modulo Contents/<arch>/. Se la
+// troviamo siamo installati: systemDir sta DENTRO il bundle, quindi il plugin è rilocabile
+// (non deve più risalire all'albero sorgente in C:\Rack). Torna "" per una build in-tree,
+// dove Contents/Resources non esiste e vale findSystemDir(). Questo scarta anche il CLAP,
+// che non ha una Resources accanto → nessuna regressione sul percorso condiviso.
+std::string findPackagedResources() {
+	std::string moduleDir = getModuleDir();
+	size_t slash = moduleDir.find_last_of("/\\");
+	if (slash == std::string::npos)
+		return "";
+	std::string resources = moduleDir.substr(0, slash) + "/Resources";
+	if (system::isDirectory(resources + "/res"))
+		return resources;
+	return "";
+}
+
 
 // Configura la porta audio di un modulo Core Audio perché usi il nostro driver "DAW".
 // (Core dataFromJson: chiave "audio" -> audio::Port::fromJson.) Sottoscrivendosi al
@@ -420,16 +437,29 @@ bool processInit(const char* logName) {
 	system::init();
 	system::resetFpuFlags();
 
-	// systemDir = la radice dell'albero Rack (dove vivono res/, Core.json, Fundamental),
-	// cercata risalendo dalla cartella del modulo.
-	// userDir = la stessa cartella: in sviluppo l'albero Rack è in C:\Rack (dove il plugin
-	// viene buildato) e lì stanno settings.json / plugins-win-x64 / log. Così l'adapter
-	// condivide l'ambiente col Rack-da-sorgente.
-	// NB packaging (fase successiva): per un plugin installato, userDir andrà puntato
-	// ad AppData/Local/Rack2 per condividere la libreria col Rack standalone installato.
-	const std::string systemDir = findSystemDir();
-	asset::systemDir = systemDir;
-	asset::userDir = systemDir;
+	// Due modalità, distinte da findPackagedResources():
+	//
+	//  • BUNDLE INSTALLATO (make vst3dist → Contents/Resources con res/ + Core.json):
+	//    systemDir sta dentro il bundle, così il plugin è rilocabile in qualunque cartella
+	//    VST3. userDir lo lasciamo VUOTO: asset::init() lo deriva da sé
+	//    (%LOCALAPPDATA%\Rack2 su Windows), la STESSA libreria/token/patch del Rack
+	//    standalone installato — così i plugin scaricati e l'entitlement Plus sono condivisi.
+	//    NB il merge del solo token in settings::saveToken() evita di sovrascrivere le
+	//    settings dello standalone; il log finisce anch'esso in quella cartella.
+	//
+	//  • BUILD IN-TREE (make vst3, bundle in C:\Rack senza Contents/Resources): systemDir e
+	//    userDir puntano entrambi alla radice sorgente risalita da findSystemDir(), dove in
+	//    sviluppo stanno res/, settings.json, plugins-win-x64 e il log. Comportamento storico.
+	std::string packagedRes = findPackagedResources();
+	if (!packagedRes.empty()) {
+		asset::systemDir = packagedRes;
+		asset::userDir = ""; // asset::init() → libreria per-utente condivisa
+	}
+	else {
+		const std::string systemDir = findSystemDir();
+		asset::systemDir = systemDir;
+		asset::userDir = systemDir;
+	}
 	asset::init();
 
 	// Log separato da quello dello standalone (e degli altri formati), per non

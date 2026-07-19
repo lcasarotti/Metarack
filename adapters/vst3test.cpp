@@ -1,6 +1,6 @@
 // Dev harness — mini-host VST3 da console per testare adapters/vst3.cpp SENZA un DAW.
 //
-// Carica il bundle Rack.vst3, esegue l'intero ciclo di vita VST3 (InitDll -> factory ->
+// Carica il bundle MetaRack.vst3, esegue l'intero ciclo di vita VST3 (InitDll -> factory ->
 // create_instance -> initialize -> setup_processing -> set_active -> alcuni process() ->
 // teardown) e stampa i log INFO di Rack.
 //
@@ -37,8 +37,8 @@ static constexpr const v3_tuid kClassTuid = V3_ID(0x4D657461, 0x5261636B, 0x436F
 // nulla accanto a sé, quindi se il bundle non è autosufficiente il caricamento fallisce come
 // fallirebbe in un DAW.
 //
-// Uso: RackVst3Test.exe ["C:\percorso\Rack.vst3"]
-static const wchar_t* const kDefaultBundle = L"Rack.vst3";
+// Uso: RackVst3Test.exe ["C:\percorso\MetaRack.vst3"]
+static const wchar_t* const kDefaultBundle = L"MetaRack.vst3";
 static std::wstring g_bundleArg;
 
 typedef bool (*InitDllFn)(void);
@@ -210,7 +210,7 @@ int main() {
 	SetEnvironmentVariableA("METARACK_TEST_PASSTHROUGH", "1");
 
 	const std::wstring bundle = g_bundleArg.empty() ? kDefaultBundle : g_bundleArg;
-	const std::wstring modulePath = bundle + L"\\Contents\\x86_64-win\\Rack.vst3";
+	const std::wstring modulePath = bundle + L"\\Contents\\x86_64-win\\MetaRack.vst3";
 	std::printf("== RackVst3Test: carico %ls ==\n", modulePath.c_str());
 
 	// Carichiamo con LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, cioè la politica di ricerca DLL più
