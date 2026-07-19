@@ -152,9 +152,10 @@ struct RackPlugView : v3_plugin_view_cpp {
 // (vedi kMidiControllersPerChannel). Oggetto minuscolo e stateless, posseduto dal controller.
 
 struct RackMidiMapping : v3_midi_mapping_cpp {
-	std::atomic_int refcounter;
+	std::atomic_int refcounter; // vestigiale: le ref inoltrano al component (identità COM)
+	RackComponent* component;   // proprietario logico: ref/unref inoltrano al suo refcounter
 
-	RackMidiMapping();
+	RackMidiMapping(RackComponent* c);
 
 	static v3_result V3_API queryInterface(void* self, const v3_tuid iid, void** iface);
 	static uint32_t V3_API refFn(void* self);
@@ -248,6 +249,12 @@ struct RackComponent : v3_component_cpp {
 	RackEditController* controller = nullptr; // idem
 #endif
 	rackhost::Instance* rack = nullptr;      // nullo finché l'host non chiama initialize()
+
+	// Il puntatore-a-puntatore che create_instance ha consegnato all'host come IComponent.
+	// Serve a unrefFn per liberare SEMPRE l'allocazione giusta, anche quando l'ultimo rilascio
+	// arriva da un handle tearoff (processor/controller/midi-mapping) invece che dall'handle
+	// del component stesso (vedi la nota sull'identità COM sopra unrefFn).
+	RackComponent** selfPtr = nullptr;
 
 	// Formato negoziato con l'host. setup_processing può arrivare prima di set_active,
 	// quindi lo memorizziamo e attiviamo il core quando entrambi sono noti.
@@ -376,6 +383,7 @@ RackPlugView::RackPlugView(RackComponent* c) : refcounter(1), component(c) {
 }
 
 RackPlugView::~RackPlugView() {
+	INFO("VST3 ~RackPlugView (placeholder=%p)", (void*) placeholder);
 	if (placeholder)
 		DestroyWindow(placeholder);
 }
@@ -442,6 +450,7 @@ v3_result V3_API RackPlugView::attached(void* self, void* parent, const char* pl
 
 v3_result V3_API RackPlugView::removed(void* self) {
 	RackPlugView* v = *static_cast<RackPlugView**>(self);
+	INFO("VST3 RackPlugView::removed (rack=%p)", (void*) v->component->rack);
 	if (v->component->rack)
 		rackhost::guiHide(v->component->rack);
 	if (v->placeholder) {
@@ -513,7 +522,7 @@ v3_result V3_API RackPlugView::checkSizeConstraint(void* /*self*/, v3_view_rect*
 
 // --- midi mapping: implementazione -----------------------------------------------------
 
-RackMidiMapping::RackMidiMapping() : refcounter(1) {
+RackMidiMapping::RackMidiMapping(RackComponent* c) : refcounter(1), component(c) {
 	// v3_funknown
 	query_interface = queryInterface;
 	ref = refFn;
@@ -525,7 +534,7 @@ RackMidiMapping::RackMidiMapping() : refcounter(1) {
 v3_result V3_API RackMidiMapping::queryInterface(void* self, const v3_tuid iid, void** iface) {
 	RackMidiMapping* m = *static_cast<RackMidiMapping**>(self);
 	if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_midi_mapping_iid)) {
-		++m->refcounter;
+		++m->component->refcounter; // identità COM: la ref conta sul component
 		*iface = self;
 		return V3_OK;
 	}
@@ -533,13 +542,17 @@ v3_result V3_API RackMidiMapping::queryInterface(void* self, const v3_tuid iid, 
 	return V3_NO_INTERFACE;
 }
 
+// Tearoff: la vita è quella del component (identità COM). ref/unref NON toccano un contatore
+// proprio ma inoltrano a quello del component, così il component non può morire mentre l'host
+// tiene ancora questa interfaccia.
 uint32_t V3_API RackMidiMapping::refFn(void* self) {
-	return ++(*static_cast<RackMidiMapping**>(self))->refcounter;
+	RackMidiMapping* m = *static_cast<RackMidiMapping**>(self);
+	return RackComponent::refFn(&m->component);
 }
 
 uint32_t V3_API RackMidiMapping::unrefFn(void* self) {
-	// Tearoff: il controller è il proprietario, qui non si distrugge nulla.
-	return --(*static_cast<RackMidiMapping**>(self))->refcounter;
+	RackMidiMapping* m = *static_cast<RackMidiMapping**>(self);
+	return RackComponent::unrefFn(&m->component);
 }
 
 v3_result V3_API RackMidiMapping::getMidiControllerAssignment(void* /*self*/, int32_t bus,
@@ -588,16 +601,15 @@ v3_result V3_API RackEditController::queryInterface(void* self, const v3_tuid ii
 	RackEditController* c = *static_cast<RackEditController**>(self);
 	if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_plugin_base_iid)
 	    || v3_tuid_match(iid, v3_edit_controller_iid)) {
-		++c->refcounter;
+		++c->component->refcounter; // identità COM: la ref conta sul component
 		*iface = self;
 		return V3_OK;
 	}
 	if (v3_tuid_match(iid, v3_midi_mapping_iid)) {
 		// Il membro puntatore è esso stesso il T** da consegnare (vedi l'idioma in testa).
 		if (!c->midiMapping)
-			c->midiMapping = new RackMidiMapping;
-		else
-			++c->midiMapping->refcounter;
+			c->midiMapping = new RackMidiMapping(c->component);
+		++c->component->refcounter; // identità COM: anche IMidiMapping conta sul component
 		*iface = &c->midiMapping;
 		return V3_OK;
 	}
@@ -605,13 +617,17 @@ v3_result V3_API RackEditController::queryInterface(void* self, const v3_tuid ii
 	return V3_NO_INTERFACE;
 }
 
+// Tearoff: la vita è quella del component (identità COM). Inoltriamo al suo refcounter, così
+// l'host può rilasciare IComponent/IEditController/IAudioProcessor in qualsiasi ordine senza
+// che il component (e questo controller, che ne è membro) venga distrutto troppo presto.
 uint32_t V3_API RackEditController::refFn(void* self) {
-	return ++(*static_cast<RackEditController**>(self))->refcounter;
+	RackEditController* c = *static_cast<RackEditController**>(self);
+	return RackComponent::refFn(&c->component);
 }
 
 uint32_t V3_API RackEditController::unrefFn(void* self) {
-	// Tearoff: il component è il proprietario, qui non si distrugge nulla.
-	return --(*static_cast<RackEditController**>(self))->refcounter;
+	RackEditController* c = *static_cast<RackEditController**>(self);
+	return RackComponent::unrefFn(&c->component);
 }
 
 v3_result V3_API RackEditController::initialize(void* /*self*/, v3_funknown** /*context*/) {
@@ -748,7 +764,7 @@ RackAudioProcessor::RackAudioProcessor(RackComponent* c)
 v3_result V3_API RackAudioProcessor::queryInterface(void* self, const v3_tuid iid, void** iface) {
 	RackAudioProcessor* p = *static_cast<RackAudioProcessor**>(self);
 	if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_audio_processor_iid)) {
-		++p->refcounter;
+		++p->component->refcounter; // identità COM: la ref conta sul component
 		*iface = self;
 		return V3_OK;
 	}
@@ -756,13 +772,17 @@ v3_result V3_API RackAudioProcessor::queryInterface(void* self, const v3_tuid ii
 	return V3_NO_INTERFACE;
 }
 
+// Tearoff: la vita è quella del component (identità COM). Inoltriamo al suo refcounter — è
+// proprio la ref del processor che, tenuta dall'host oltre il rilascio di IComponent, causava
+// l'use-after-free alla chiusura: ora il component non muore finché anche questa è viva.
 uint32_t V3_API RackAudioProcessor::refFn(void* self) {
-	return ++(*static_cast<RackAudioProcessor**>(self))->refcounter;
+	RackAudioProcessor* p = *static_cast<RackAudioProcessor**>(self);
+	return RackComponent::refFn(&p->component);
 }
 
 uint32_t V3_API RackAudioProcessor::unrefFn(void* self) {
-	// Tearoff: il component è il proprietario, qui non si distrugge nulla.
-	return --(*static_cast<RackAudioProcessor**>(self))->refcounter;
+	RackAudioProcessor* p = *static_cast<RackAudioProcessor**>(self);
+	return RackComponent::unrefFn(&p->component);
 }
 
 v3_result V3_API RackAudioProcessor::setBusArrangements(void* /*self*/,
@@ -771,6 +791,8 @@ v3_result V3_API RackAudioProcessor::setBusArrangements(void* /*self*/,
 	// Accettiamo esattamente kStereoBuses bus stereo per direzione: è il formato del ponte
 	// verso il modulo Core Audio-16 (ogni bus = una coppia di canali del device DAW).
 	const v3_speaker_arrangement stereo = V3_SPEAKER_L | V3_SPEAKER_R;
+	INFO("VST3 setBusArrangements: host chiede numInputs=%d numOutputs=%d (noi vogliamo %d/%d)",
+	     (int) numInputs, (int) numOutputs, (int) kStereoBuses, (int) kStereoBuses);
 	if (numInputs != kStereoBuses || numOutputs != kStereoBuses)
 		return V3_FALSE;
 	for (int32_t i = 0; i < numInputs; i++)
@@ -801,6 +823,8 @@ uint32_t V3_API RackAudioProcessor::getLatencySamples(void* /*self*/) {
 
 v3_result V3_API RackAudioProcessor::setupProcessing(void* self, v3_process_setup* setup) {
 	RackAudioProcessor* p = *static_cast<RackAudioProcessor**>(self);
+	INFO("VST3 setupProcessing: sampleRate=%g maxBlockSize=%d sampleSize=%d",
+	     setup->sample_rate, (int) setup->max_block_size, (int) setup->symbolic_sample_size);
 	if (setup->symbolic_sample_size != V3_SAMPLE_32)
 		return V3_FALSE;
 	p->component->sampleRate = setup->sample_rate;
@@ -1000,12 +1024,21 @@ RackComponent::RackComponent() : refcounter(1) {
 }
 
 RackComponent::~RackComponent() {
+	INFO("VST3 ~RackComponent: inizio (processor=%p controller=%p)",
+	     (void*) processor,
+#if defined ARCH_WIN
+	     (void*) controller
+#else
+	     (void*) nullptr
+#endif
+	    );
 	delete processor;
 	processor = nullptr;
 #if defined ARCH_WIN
 	delete controller;
 	controller = nullptr;
 #endif
+	INFO("VST3 ~RackComponent: fine");
 }
 
 v3_result V3_API RackComponent::queryInterface(void* self, const v3_tuid iid, void** iface) {
@@ -1020,10 +1053,11 @@ v3_result V3_API RackComponent::queryInterface(void* self, const v3_tuid iid, vo
 
 	if (v3_tuid_match(iid, v3_audio_processor_iid)) {
 		// Il membro puntatore è esso stesso il T** da consegnare (vedi l'idioma in testa).
+		// L'oggetto tearoff si crea pigramente, ma la REF conta sempre sul component (identità
+		// COM): è l'unico refcounter che governa la vita di tutto.
 		if (!c->processor)
 			c->processor = new RackAudioProcessor(c);
-		else
-			++c->processor->refcounter;
+		++c->refcounter;
 		*iface = &c->processor;
 		return V3_OK;
 	}
@@ -1033,8 +1067,7 @@ v3_result V3_API RackComponent::queryInterface(void* self, const v3_tuid iid, vo
 		// Single component effect: il controller è nostro, non una classe separata.
 		if (!c->controller)
 			c->controller = new RackEditController(c);
-		else
-			++c->controller->refcounter;
+		++c->refcounter;
 		*iface = &c->controller;
 		return V3_OK;
 	}
@@ -1049,14 +1082,20 @@ uint32_t V3_API RackComponent::refFn(void* self) {
 }
 
 uint32_t V3_API RackComponent::unrefFn(void* self) {
-	RackComponent** cptr = static_cast<RackComponent**>(self);
-	RackComponent* c = *cptr;
+	RackComponent* c = *static_cast<RackComponent**>(self);
 	const int refcount = --c->refcounter;
 	if (refcount > 0)
 		return (uint32_t) refcount;
 
-	// Ultimo riferimento: distruggi l'oggetto e il puntatore che l'host teneva (creati
-	// entrambi da create_instance).
+	// IDENTITÀ COM: questo refcounter conta TUTTE le interfacce che l'host ha ottenuto sullo
+	// stesso oggetto logico — IComponent, IAudioProcessor, IEditController, IMidiMapping — che
+	// inoltrano tutte qui (vedi i tearoff). Arrivati a zero l'host non ne tiene più nessuna,
+	// quindi è ora sicuro distruggere l'oggetto (e con esso i membri processor/controller).
+	//
+	// Liberiamo SEMPRE selfPtr, il RackComponent** che create_instance ha dato all'host: `self`
+	// qui potrebbe essere l'indirizzo di un membro (&component->processor) se l'ultimo rilascio
+	// è arrivato da un handle tearoff, e delete su quello sarebbe un disastro.
+	RackComponent** cptr = c->selfPtr;
 	delete c;
 	delete cptr;
 	return 0;
@@ -1084,10 +1123,12 @@ v3_result V3_API RackComponent::initialize(void* self, v3_funknown** /*context*/
 
 v3_result V3_API RackComponent::terminate(void* self) {
 	RackComponent* c = *static_cast<RackComponent**>(self);
+	INFO("VST3 RackComponent::terminate (rack=%p)", (void*) c->rack);
 	if (c->rack) {
 		rackhost::destroyInstance(c->rack);
 		c->rack = nullptr;
 	}
+	INFO("VST3 RackComponent::terminate fine");
 	return V3_OK;
 }
 
@@ -1156,6 +1197,8 @@ v3_result V3_API RackComponent::activateBus(void* /*self*/, int32_t /*mediaType*
 
 v3_result V3_API RackComponent::setActive(void* self, v3_bool state) {
 	RackComponent* c = *static_cast<RackComponent**>(self);
+	INFO("VST3 setActive(%d) (rack=%p thread %lu)", (int) state, (void*) c->rack,
+	     (unsigned long) GetCurrentThreadId());
 	if (!c->rack)
 		return V3_NOT_INITIALIZED;
 	if (state)
@@ -1282,6 +1325,9 @@ struct RackFactory : v3_plugin_factory_cpp {
 		// quindi il puntatore stesso è allocato sullo heap e vive quanto l'oggetto.
 		RackComponent** componentptr = new RackComponent*;
 		*componentptr = new RackComponent;
+		// unrefFn libererà questo stesso puntatore quando l'ultima interfaccia sarà rilasciata,
+		// da qualunque handle arrivi il rilascio finale (vedi l'identità COM lì).
+		(*componentptr)->selfPtr = componentptr;
 		*instance = static_cast<void*>(componentptr);
 		return V3_OK;
 	}
