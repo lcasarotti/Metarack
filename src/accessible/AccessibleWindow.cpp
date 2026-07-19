@@ -3269,6 +3269,32 @@ static void forceForeground(HWND target) {
 		AttachThreadInput(myThread, fgThread, FALSE);
 }
 
+// EnumWindows callback: find Ableton Live's main application window among the top-level
+// windows of our (the host's) process. We run in-process with the DAW, so its windows share
+// our process id. Live's main window carries the class "Ableton Live Window Class"; its VST
+// editor float uses a different class ("AbletonVstPlugClass"), so matching the "Ableton Live"
+// substring lands on the main window — the one that hosts the Device View — and never on the
+// float. Stores the hit through the LPARAM and stops the enumeration.
+static BOOL CALLBACK findAbletonMainProc(HWND hwnd, LPARAM lp) {
+	DWORD pid = 0;
+	GetWindowThreadProcessId(hwnd, &pid);
+	if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd))
+		return TRUE; // keep scanning
+	wchar_t cls[128] = L"";
+	GetClassNameW(hwnd, cls, 128);
+	if (!wcsstr(cls, L"Ableton Live"))
+		return TRUE;
+	*reinterpret_cast<HWND*>(lp) = hwnd;
+	return FALSE; // found — stop
+}
+
+// Live's main window if we're hosted inside Ableton, else nullptr (any other host / standalone).
+static HWND findAbletonMainWindow() {
+	HWND found = nullptr;
+	EnumWindows(findAbletonMainProc, reinterpret_cast<LPARAM>(&found));
+	return found;
+}
+
 LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
   HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
   UINT_PTR /*uid*/, DWORD_PTR data) {
@@ -3376,14 +3402,24 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 		// top-level window, so the host never sees an F6 pressed here — we intercept it
 		// and foreground the host ourselves, mirroring Reaper's "F6 returns to the
 		// arrange view" convention. From there Alt+Tab (or F6 again) comes back.
-		if (wp == VK_F6 && self->hostWindow) {
-			// Hold off the VST3 placeholder's bounce-on-focus for a moment: some hosts
-			// (Ableton) return F6 to the plugin's own editor window, which then refocuses
-			// our placeholder and would bounce MetaRack straight back. ~600ms outlasts that
-			// focus churn; Reaper (F6 → arrange view) never bounces, so it expires unused.
-			self->suppressBounceUntil = GetTickCount() + 600;
-			forceForeground(self->hostWindow);
-			return 0;
+		if (wp == VK_F6) {
+			// In Ableton Live, prefer the main window (home of the Device View, where the
+			// MetaRack device sits) over the recorded hostWindow — which is Live's floating
+			// VST editor, not a useful place to land. Every other host keeps the generic
+			// target (Reaper's arrange view, etc.).
+			HWND target = findAbletonMainWindow();
+			if (!target)
+				target = self->hostWindow;
+			if (target) {
+				// Hold off the VST3 placeholder's bounce-on-focus for a moment: some hosts
+				// (Ableton) return F6 to the plugin's own editor window, which then refocuses
+				// our placeholder and would bounce MetaRack straight back. ~600ms outlasts
+				// that focus churn; Reaper (F6 → arrange view) never bounces, so it expires
+				// unused.
+				self->suppressBounceUntil = GetTickCount() + 600;
+				forceForeground(target);
+				return 0;
+			}
 		}
 
 		// Global Ctrl shortcuts (work from any view).
