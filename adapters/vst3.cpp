@@ -383,7 +383,6 @@ RackPlugView::RackPlugView(RackComponent* c) : refcounter(1), component(c) {
 }
 
 RackPlugView::~RackPlugView() {
-	INFO("VST3 ~RackPlugView (placeholder=%p)", (void*) placeholder);
 	if (placeholder)
 		DestroyWindow(placeholder);
 }
@@ -450,7 +449,6 @@ v3_result V3_API RackPlugView::attached(void* self, void* parent, const char* pl
 
 v3_result V3_API RackPlugView::removed(void* self) {
 	RackPlugView* v = *static_cast<RackPlugView**>(self);
-	INFO("VST3 RackPlugView::removed (rack=%p)", (void*) v->component->rack);
 	if (v->component->rack)
 		rackhost::guiHide(v->component->rack);
 	if (v->placeholder) {
@@ -791,8 +789,6 @@ v3_result V3_API RackAudioProcessor::setBusArrangements(void* /*self*/,
 	// Accettiamo esattamente kStereoBuses bus stereo per direzione: è il formato del ponte
 	// verso il modulo Core Audio-16 (ogni bus = una coppia di canali del device DAW).
 	const v3_speaker_arrangement stereo = V3_SPEAKER_L | V3_SPEAKER_R;
-	INFO("VST3 setBusArrangements: host chiede numInputs=%d numOutputs=%d (noi vogliamo %d/%d)",
-	     (int) numInputs, (int) numOutputs, (int) kStereoBuses, (int) kStereoBuses);
 	if (numInputs != kStereoBuses || numOutputs != kStereoBuses)
 		return V3_FALSE;
 	for (int32_t i = 0; i < numInputs; i++)
@@ -823,8 +819,6 @@ uint32_t V3_API RackAudioProcessor::getLatencySamples(void* /*self*/) {
 
 v3_result V3_API RackAudioProcessor::setupProcessing(void* self, v3_process_setup* setup) {
 	RackAudioProcessor* p = *static_cast<RackAudioProcessor**>(self);
-	INFO("VST3 setupProcessing: sampleRate=%g maxBlockSize=%d sampleSize=%d",
-	     setup->sample_rate, (int) setup->max_block_size, (int) setup->symbolic_sample_size);
 	if (setup->symbolic_sample_size != V3_SAMPLE_32)
 		return V3_FALSE;
 	p->component->sampleRate = setup->sample_rate;
@@ -1024,21 +1018,12 @@ RackComponent::RackComponent() : refcounter(1) {
 }
 
 RackComponent::~RackComponent() {
-	INFO("VST3 ~RackComponent: inizio (processor=%p controller=%p)",
-	     (void*) processor,
-#if defined ARCH_WIN
-	     (void*) controller
-#else
-	     (void*) nullptr
-#endif
-	    );
 	delete processor;
 	processor = nullptr;
 #if defined ARCH_WIN
 	delete controller;
 	controller = nullptr;
 #endif
-	INFO("VST3 ~RackComponent: fine");
 }
 
 v3_result V3_API RackComponent::queryInterface(void* self, const v3_tuid iid, void** iface) {
@@ -1123,12 +1108,10 @@ v3_result V3_API RackComponent::initialize(void* self, v3_funknown** /*context*/
 
 v3_result V3_API RackComponent::terminate(void* self) {
 	RackComponent* c = *static_cast<RackComponent**>(self);
-	INFO("VST3 RackComponent::terminate (rack=%p)", (void*) c->rack);
 	if (c->rack) {
 		rackhost::destroyInstance(c->rack);
 		c->rack = nullptr;
 	}
-	INFO("VST3 RackComponent::terminate fine");
 	return V3_OK;
 }
 
@@ -1197,8 +1180,6 @@ v3_result V3_API RackComponent::activateBus(void* /*self*/, int32_t /*mediaType*
 
 v3_result V3_API RackComponent::setActive(void* self, v3_bool state) {
 	RackComponent* c = *static_cast<RackComponent**>(self);
-	INFO("VST3 setActive(%d) (rack=%p thread %lu)", (int) state, (void*) c->rack,
-	     (unsigned long) GetCurrentThreadId());
 	if (!c->rack)
 		return V3_NOT_INITIALIZED;
 	if (state)

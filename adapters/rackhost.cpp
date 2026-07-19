@@ -361,6 +361,48 @@ void addDawAudioModule(Instance* inst) {
 #endif // ARCH_WIN
 
 
+#if defined ARCH_WIN
+// --- logger dei crash -----------------------------------------------------------------
+// Logga modulo+offset del punto di crash e uno stack minimale per qualunque eccezione non
+// gestita, su qualunque thread. Localizza i crash dentro il DAW senza un debugger: il modulo
+// che fa fault (nostro / libRack / driver GL Intel / driver ASIO) dice subito dov'è il
+// problema. Ritorna EXCEPTION_CONTINUE_SEARCH, quindi NON altera il comportamento del crash:
+// è a costo zero e lo teniamo in pianta stabile come rete di sicurezza per i bug futuri.
+extern "C" USHORT WINAPI RtlCaptureStackBackTrace(ULONG framesToSkip, ULONG framesToCapture,
+    PVOID* backTrace, PULONG backTraceHash);
+
+void logAddressModule(const char* tag, void* addr) {
+	HMODULE mod = nullptr;
+	if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                       (LPCWSTR) addr, &mod) && mod) {
+		wchar_t nameW[MAX_PATH] = L"";
+		GetModuleFileNameW(mod, nameW, MAX_PATH);
+		std::string name = string::UTF16toUTF8(nameW);
+		size_t slash = name.find_last_of("/\\");
+		if (slash != std::string::npos)
+			name = name.substr(slash + 1);
+		WARN("  %s %s+0x%llx (addr=%p)", tag, name.c_str(),
+		     (unsigned long long)((uintptr_t) addr - (uintptr_t) mod), addr);
+	}
+	else {
+		WARN("  %s <modulo sconosciuto> addr=%p", tag, addr);
+	}
+}
+
+LONG WINAPI crashHandler(EXCEPTION_POINTERS* info) {
+	WARN("=== CRASH: eccezione 0x%08lx sul thread %lu ===",
+	     (unsigned long) info->ExceptionRecord->ExceptionCode,
+	     (unsigned long) GetCurrentThreadId());
+	logAddressModule("fault ", info->ExceptionRecord->ExceptionAddress);
+	void* frames[24];
+	USHORT n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+	for (USHORT i = 0; i < n; i++)
+		logAddressModule("stack ", frames[i]);
+	return EXCEPTION_CONTINUE_SEARCH; // lascia proseguire la normale gestione del crash
+}
+#endif
+
+
 // Mutua adapters/standalone.cpp:main() FINO A (escluso) il contextSet: tutto ciò che
 // è singleton di processo.
 bool processInit(const char* logName) {
@@ -395,6 +437,11 @@ bool processInit(const char* logName) {
 	logger::logPath = asset::user(logName);
 	logger::init();
 	random::init();
+
+#if defined ARCH_WIN
+	// Installa il logger dei crash appena il logger di Rack è pronto (vedi crashHandler).
+	SetUnhandledExceptionFilter(crashHandler);
+#endif
 
 	INFO("=== Metarack plugin adapter — process init ===");
 	INFO("%s", system::getOperatingSystemInfo().c_str());
@@ -573,14 +620,23 @@ void destroyInstance(Instance* inst) {
 	contextSet(nullptr);
 
 #if defined ARCH_WIN
-	// v1 mono-istanza: smonta i sottosistemi GUI sul main thread, specchio dell'init in
-	// createInstance(). window::destroy() (= glfwTerminate) va dopo la distruzione
-	// dell'oggetto Window fatta da ~Context.
-	if (g_guiSubsystemsInited) {
-		window::destroy();
-		ui::destroy();
-		g_guiSubsystemsInited = false;
-	}
+	// NON smontiamo i sottosistemi GUI qui. window::destroy() (= glfwTerminate) mandava in
+	// crash la DAW alla rimozione del plugin: il log del teardown arriva pulito fino
+	// all'ultima riga di ~Context e poi il processo muore, e gli unici passi rimasti sono
+	// glfwTerminate (ui::destroy è vuota). È lo STESSO teardown che lo standalone su Windows
+	// si rifiuta di eseguire — vedi il commento in standalone.cpp, dove al posto di
+	// `delete APP`/window::destroy() fa TerminateProcess proprio perché su Windows quel
+	// percorso va in crash. Il plugin non può terminare il processo (è quello della DAW),
+	// quindi la soluzione è semplicemente NON eseguirlo: glfwTerminate in-process, dopo che
+	// ~Context ha già distrutto la finestra GL, tocca stato globale GLFW/driver GPU ancora
+	// referenziato e fa cadere l'host.
+	//
+	// Conseguenza: GLFW/ui restano inizializzati per tutta la vita del processo (g_guiSubsystems
+	// Inited resta true). È corretto e anzi utile con questo adapter mono-istanza: se l'utente
+	// ri-aggiunge il plugin, createInstance riusa i sottosistemi già pronti e crea solo una
+	// nuova window::Window. Alla chiusura della DAW / unload della DLL è l'OS a reclamare tutto,
+	// esattamente come lo standalone lascia leakare APP di proposito.
+	(void) g_guiSubsystemsInited;
 #endif
 
 	delete inst;
