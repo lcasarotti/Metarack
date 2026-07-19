@@ -123,9 +123,12 @@ uint64_t debugMidiMessageCount();
 	bool guiShow(Instance* inst);
 	bool guiHide(Instance* inst);
 	bool guiGetSize(Instance* inst, uint32_t* width, uint32_t* height);
-	// Rende hostWindow "owner" della nostra finestra, così MetaRack resta sopra l'editor del
-	// DAW invece di finirci dietro.
+	// Registra la finestra del DAW come bersaglio del "ritorno all'host" (F6). NON rende più
+	// MetaRack posseduta dall'host: la proprietà la faceva sparire da Alt+Tab (vedi .cpp).
 	bool guiSetTransient(Instance* inst, HWND hostWindow);
+	// True mentre un F6 recente chiede agli adapter di non rifocalizzare MetaRack, così il
+	// rimbalzo del segnaposto VST3 non la risucchia indietro (vedi vst3.cpp / AccessibleWindow).
+	bool isBounceSuppressed(Instance* inst);
 #endif
 
 

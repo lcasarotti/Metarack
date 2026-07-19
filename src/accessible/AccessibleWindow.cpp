@@ -3377,6 +3377,11 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 		// and foreground the host ourselves, mirroring Reaper's "F6 returns to the
 		// arrange view" convention. From there Alt+Tab (or F6 again) comes back.
 		if (wp == VK_F6 && self->hostWindow) {
+			// Hold off the VST3 placeholder's bounce-on-focus for a moment: some hosts
+			// (Ableton) return F6 to the plugin's own editor window, which then refocuses
+			// our placeholder and would bounce MetaRack straight back. ~600ms outlasts that
+			// focus churn; Reaper (F6 → arrange view) never bounces, so it expires unused.
+			self->suppressBounceUntil = GetTickCount() + 600;
 			forceForeground(self->hostWindow);
 			return 0;
 		}

@@ -69,6 +69,10 @@ struct AccessibleWindow {
 	HWND hwnd            = nullptr;
 	HWND rackHwnd        = nullptr;  // main Rack window; owns this layer, regains focus when toggled off
 	HWND hostWindow      = nullptr;  // plugin mode: the DAW's main window, so F6 can return focus there
+	// GetTickCount() deadline: while now < this, plugin adapters must not re-focus MetaRack.
+	// Set by the F6 handler so the host refocusing its editor doesn't immediately bounce us
+	// back (see rackhost::isBounceSuppressed). 0 = no suppression active.
+	unsigned long suppressBounceUntil = 0;
 	HWND listRack        = nullptr;
 	HWND treeLibrary     = nullptr;
 	HWND searchLibrary   = nullptr;  // library search edit (Ctrl+F); filters the tree

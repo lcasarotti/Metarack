@@ -694,6 +694,12 @@ bool guiShow(Instance* inst) {
 	// the duration. Without this the DAW keeps focus and MetaRack only comes forward
 	// visually (leaving the screen reader stranded on the host's editor).
 	HWND fg = GetForegroundWindow();
+	// Whatever was in front the moment before we steal focus is the DAW — remember it as
+	// the F6 "return to host" target. This is more robust than guiSetTransient()'s host
+	// window (some hosts never call set_transient, or hand us an ancestor we can't
+	// foreground), and it costs nothing when they do: it just refreshes the same target.
+	if (fg && fg != target)
+		inst->accessibleWindow->hostWindow = fg;
 	DWORD fgThread = GetWindowThreadProcessId(fg, nullptr);
 	DWORD myThread = GetCurrentThreadId();
 	if (fgThread != myThread)
@@ -731,10 +737,25 @@ bool guiGetSize(Instance* inst, uint32_t* width, uint32_t* height) {
 bool guiSetTransient(Instance* inst, HWND hostWindow) {
 	if (!inst->accessibleWindow || !inst->accessibleWindow->hwnd || !hostWindow)
 		return false;
-	SetWindowLongPtrW(inst->accessibleWindow->hwnd, GWLP_HWNDPARENT, (LONG_PTR) hostWindow);
-	// Remember the DAW's window so the accessible UI's F6 shortcut can return focus to it.
+	// We deliberately do NOT make MetaRack an owned window of the host here. Ownership
+	// pins it visually above the DAW editor (worthless to a screen-reader user) but, once
+	// applied to an already-shown top-level window, unreliably strips it from Alt+Tab even
+	// with WS_EX_APPWINDOW — leaving a blind user no keyboard route back after F6. So we
+	// keep MetaRack unowned and only record the host window as the F6 return target.
 	inst->accessibleWindow->hostWindow = hostWindow;
 	return true;
+}
+
+// True while the accessible window has asked adapters to hold off re-focusing it. Set
+// briefly when the user presses F6 to hand focus back to the DAW: the VST3 placeholder's
+// bounce-on-focus (see vst3.cpp) would otherwise yank MetaRack straight back the instant
+// the host refocuses its editor (observed in Ableton, where F6 returns to the plugin
+// window rather than the arrange view).
+bool isBounceSuppressed(Instance* inst) {
+	if (!inst->accessibleWindow)
+		return false;
+	DWORD until = inst->accessibleWindow->suppressBounceUntil;
+	return until != 0 && (int32_t)(GetTickCount() - until) < 0;
 }
 
 #endif // ARCH_WIN

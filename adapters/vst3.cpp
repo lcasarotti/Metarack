@@ -343,6 +343,10 @@ void registerPlaceholderClass() {
 void bounceFocusToAccessibleWindow(RackPlugView* v) {
 	if (bouncingFocus || !v || !v->component->rack)
 		return;
+	// The user just pressed F6 to leave: don't fight them by pulling MetaRack forward when
+	// the host refocuses its editor in response.
+	if (rackhost::isBounceSuppressed(v->component->rack))
+		return;
 	bouncingFocus = true;
 	// guiShow fa ShowWindow + SetForegroundWindow + SetFocus sulla finestra accessibile.
 	// Siamo in-process con l'host, che in questo momento è in primo piano: SetForegroundWindow
@@ -427,11 +431,11 @@ v3_result V3_API RackPlugView::attached(void* self, void* parent, const char* pl
 	                                 0, 0, kWidth, kHeight, (HWND) parent, nullptr,
 	                                 GetModuleHandleW(nullptr), v);
 
-	// Best-effort: rendi la finestra top-level dell'host "owner" della nostra, così MetaRack
-	// resta sopra l'editor del DAW invece di finirci dietro. parent è una finestra figlia
-	// dentro l'editor, quindi risaliamo alla sua radice.
+	// Registra la finestra radice dell'host come bersaglio del ritorno con F6 (parent è una
+	// finestra figlia dentro l'editor, quindi risaliamo alla radice). NON rende MetaRack
+	// posseduta dall'host: la proprietà la faceva sparire da Alt+Tab dopo F6 (vedi rackhost).
 	rackhost::guiSetTransient(v->component->rack, GetAncestor((HWND) parent, GA_ROOT));
-	// La finestra è già visibile (auto-show in initialize): qui la riportiamo in primo piano.
+	// Portiamo MetaRack in primo piano (era nascosta finché l'host non apre l'editor).
 	rackhost::guiShow(v->component->rack);
 	return V3_OK;
 }
