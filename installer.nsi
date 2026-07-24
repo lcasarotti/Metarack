@@ -2,7 +2,7 @@
 
 # MetaRack's own product version, independent of the underlying Rack base version
 # (RACK_VERSION, e.g. 2.6.6, which is documented in the release notes instead).
-!define METARACK_VERSION "1.0"
+!define METARACK_VERSION "2.0"
 !define NAME_FULL "MetaRack ${METARACK_VERSION}"
 !define NAME "MetaRack ${RACK_VERSION_MAJOR}"
 !define RACK_DIR "MetaRack${RACK_VERSION_MAJOR}"
@@ -131,6 +131,20 @@ Section "${NAME}" INSTALL_SECTION
 	; Create shortcuts
 	CreateShortcut "$DESKTOP\${NAME}.lnk" "$INSTDIR\Rack.exe"
 	CreateShortcut "$SMPROGRAMS\${NAME}.lnk" "$INSTDIR\Rack.exe"
+
+	; Install the VST3 plugin into the system-wide VST3 folder so every DAW finds
+	; it. The self-contained bundle (dist\MetaRack.vst3, produced by "make vst3dist")
+	; carries its own res/, Core.json, runtime DLLs and nvdaControllerClient.dll, so
+	; it does not depend on the standalone install above. It shares the user library
+	; and login token with the standalone via %LOCALAPPDATA%\Rack2 (see rackhost's
+	; packaged-asset resolution). $COMMONFILES64 is C:\Program Files\Common Files
+	; regardless of installer bitness; the "Luca Casarotti" vendor subfolder matches
+	; the bundle's kVendor. Wipe any previous bundle first: NSIS can't overwrite files
+	; with folders, and a stale file left behind could shadow the fresh one.
+	DetailPrint "Installing VST3 plugin"
+	RMDir /r "$COMMONFILES64\VST3\Luca Casarotti\MetaRack.vst3"
+	SetOutPath "$COMMONFILES64\VST3\Luca Casarotti"
+	File /r "dist\MetaRack.vst3"
 SectionEnd
 
 
@@ -139,6 +153,10 @@ Section "Uninstall"
 	RMDir /r "$INSTDIR"
 	; Attempt to remove C:\Program Files\VCV if empty
 	RMDir "$INSTDIR\.."
+
+	; Remove the system-wide VST3 plugin, then the vendor folder if we left it empty.
+	RMDir /r "$COMMONFILES64\VST3\Luca Casarotti\MetaRack.vst3"
+	RMDir "$COMMONFILES64\VST3\Luca Casarotti"
 
 	Delete "$DESKTOP\${NAME}.lnk"
 	Delete "$SMPROGRAMS\${NAME}.lnk"

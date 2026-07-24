@@ -34,6 +34,7 @@
 
 #include <arch.hpp>
 #include <logger.hpp>
+#include <settings.hpp>
 
 #if defined ARCH_WIN
 	#include <windows.h>
@@ -294,6 +295,12 @@ struct RackComponent : v3_component_cpp {
 // Classe Win32 del pannellino segnaposto. Registrata pigramente alla prima attached().
 const wchar_t* const kPlaceholderClass = L"MetarackVst3Placeholder";
 
+// Piccolo localizzatore, gemello del T() dell'AccessibleWindow (quelli sono static lì, non
+// raggiungibili da qui): segue la stessa lingua scelta dalla UI del plugin. Fallback inglese.
+const wchar_t* T(const wchar_t* en, const wchar_t* it) {
+	return rack::settings::language == "it" ? it : en;
+}
+
 // Porta il focus dalla view dell'host alla finestra accessibile, l'unica UI leggibile.
 // Il rimbalzo può rientrare (l'host reagisce alla perdita di focus rifocalizzando la
 // propria view): la guardia lo taglia dopo un giro.
@@ -321,13 +328,14 @@ LRESULT CALLBACK placeholderWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 			}
 			break;
 		case WM_PAINT: {
+			// Solo un riquadro grigio: il messaggio vive nel nome-finestra MSAA (vedi attached),
+			// l'unico canale che NVDA annuncia in modo affidabile. Dipingerlo anche qui lo
+			// duplicherebbe (NVDA legge il testo GDI via display model).
 			PAINTSTRUCT ps;
 			HDC dc = BeginPaint(hwnd, &ps);
 			RECT rc;
 			GetClientRect(hwnd, &rc);
 			FillRect(dc, &rc, (HBRUSH)(COLOR_BTNFACE + 1));
-			const wchar_t* text = L"MetaRack\nLa UI è la finestra \"MetaRack\" (Alt+Tab). F6 la richiude qui.";
-			DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
 			EndPaint(hwnd, &ps);
 			return 0;
 		}
@@ -435,7 +443,8 @@ v3_result V3_API RackPlugView::attached(void* self, void* parent, const char* pl
 	// Il testo della finestra è il nome MSAA che NVDA legge se il focus si ferma qui;
 	// WS_TABSTOP la rende raggiungibile, e lpCreateParams le dà la view su cui rimbalzare.
 	v->placeholder = CreateWindowExW(0, kPlaceholderClass,
-	                                 L"MetaRack — la UI è la finestra MetaRack, raggiungibile con Alt+Tab",
+	                                 T(L"MetaRack — the UI is the MetaRack window, reachable with Alt+Tab; F6 returns to the DAW",
+	                                   L"MetaRack — la UI è la finestra MetaRack, raggiungibile con Alt+Tab; F6 riporta alla finestra della DAW"),
 	                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 	                                 0, 0, kWidth, kHeight, (HWND) parent, nullptr,
 	                                 GetModuleHandleW(nullptr), v);
