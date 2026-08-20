@@ -479,4 +479,8 @@ carattere: **F2=INPUT, F3=OUTPUT, F4=PARAM** (`switchToDetailView`, gemella Mac 
 - **Manuali aggiornati** (commit `e9992377`): tutti e quattro i `docs/*.html`. Nei due Mac c'è
   una nota apposita sui tasti funzione Apple (Fn, oppure *Impostazioni di Sistema → Tastiera →
   Abbreviazioni da tastiera → Tasti funzione*).
+- ✅ **VERIFICATO DAL VIVO 2026-08-20 dall'utente: "funziona tutto"** — F2/F3/F4/F5 e Shift+D
+  provati nel **VST3 dentro Reaper e Ableton Live** col bundle ricompilato. Conferma anche il
+  dubbio che avevo lasciato aperto: la finestra MetaRack è top-level e tiene il focus, quindi i
+  tasti funzione arrivano a noi e **non vengono intercettati dagli acceleratori della DAW**.
 - Codice committato in `c020e6f9` (Win + Mac insieme).

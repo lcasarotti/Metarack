@@ -278,8 +278,9 @@ Il ramo headless (non-Windows) non ha widget, lì i cavi bare-engine vanno bene.
   niente audio). Fix: `settings::saveToken()` fa il MERGE del solo campo `token` nel `settings.json`
   esistente (non riscrive il resto), chiamato da `logIn`/`logOut`. Commit `d8a28a36`. Verifica nel
   log: riga `saveToken] Saving token to settings` tra `POST /token` e `GET /user`.
-- **Ancora da confermare dal vivo**: audio che attraversa il rack dentro il DAW, chiusura del DAW
-  senza crash.
+- ✅ **Confermato dal vivo il 2026-08-20** (Reaper + Ableton Live): plugin usato davvero dentro
+  la DAW, comprese le scorciatoie nuove (vedi [[project-accessible-window]]). Restava aperto
+  da luglio.
 - ⚠️ **DUE CRASH LIVE APERTI (dal 2026-07-18): rimozione del plugin → DAW down; caricamento → device
   ASIO espulso ("can't open device"), Reaper e Live.** Debug in corso con build diagnostica deployata
   (handler crash + breadcrumb). Dettagli, cosa è escluso e prossimo passo in [[project-vst3-daw-crashes]].
@@ -316,7 +317,9 @@ dell'utente = riferimento).
   **installato in Program Files**, ricerca DLL ristretta: `vendor: Luca Casarotti`, pass-through
   RMS ~0.35, MIDI + pitch-bend ok, ciclo di vita completo, exit 0. Log conferma
   `systemDir=…\Contents/Resources`, `userDir=…AppData\Local\Rack2`, Core caricato dal `res/` del
-  bundle. **Ancora da provare dentro un DAW vero** (Reaper punta già la cartella VST3 comune).
+  bundle. ✅ **PROVATO DAL VIVO in Reaper e Ableton Live il 2026-08-20** ("funziona tutto"),
+  col bundle installato in `%COMMONPROGRAMFILES%\VST3\Luca Casarotti\MetaRack.vst3`: il
+  packaging rilocabile regge in una DAW vera, non solo sotto `RackVst3Test`.
 
 ## Limiti / nodi aperti
 
