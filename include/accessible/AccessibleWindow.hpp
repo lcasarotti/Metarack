@@ -113,10 +113,19 @@ struct AccessibleWindow {
 	// "Computer keyboard" MIDI driver instead of driving the accessible UI; every
 	// other key still navigates. See ChildSubclassProc.
 	bool                  midiKeyboardMode = false;
-	bool                  swallowNextChar  = false;  // eat the WM_CHAR that trails a routed note
+	bool                  swallowNextChar  = false;  // eat the WM_CHAR that trails a consumed key
 	std::vector<int>      heldMidiKeys;              // GLFW key codes of notes currently held down
 
-	// ── Display cell navigation (D key) ───────────────────────────────────────
+	// Call when consuming a WM_KEYDOWN that carries a printable character (a
+	// letter shortcut such as Shift+D). The message pump runs TranslateMessage
+	// before DispatchMessage, so the matching WM_CHAR is already queued and would
+	// reach the ListView as first-letter type-ahead however we answer the
+	// WM_KEYDOWN; this flag makes ChildSubclassProc drop that stray character.
+	void swallowChar() {
+		swallowNextChar = true;
+	}
+
+	// ── Display cell navigation (Shift+D) ─────────────────────────────────────
 	std::vector<DisplayCell>                  displayCells;
 	std::vector<std::vector<ContextMenuItem>> menuStack;       // stack of menu levels
 	rack::ui::MenuOverlay*                    capturedOverlay = nullptr;
@@ -220,6 +229,10 @@ private:
 	static int midiKeyForVk(WPARAM vk);
 
 	void handleRackKey(WPARAM vk);
+	// F2/F3/F4: open the INPUT/OUTPUT/PARAM view of the module currently in focus.
+	// From RACK the module is the focused row's; from a detail view it's the one
+	// already open, so the three keys double as a direct jump between them.
+	void switchToDetailView(View v);
 	// Clipboard / duplicate shortcuts in the RACK list (Ctrl+C/V/D, Ctrl+Shift+D).
 	// shift selects the "with cables" variant of duplicate.
 	void handleRackCtrlKey(WPARAM vk, bool shift);

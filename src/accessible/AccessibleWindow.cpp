@@ -1395,7 +1395,7 @@ void AccessibleWindow::buildModuleSpecificContextMenu(app::ModuleWidget* mw) {
 	showContextMenu(items);        // sets previousView, shows CONTEXT_MENU
 }
 
-// ── Display cell navigation (D key) ──────────────────────────────────────────
+// ── Display cell navigation (Shift+D) ────────────────────────────────────────
 
 void AccessibleWindow::collectDisplayCells(app::ModuleWidget* mw) {
 	displayCells.clear();
@@ -1545,8 +1545,8 @@ void AccessibleWindow::handleDisplayKey() {
 		return;
 
 	// In the rack list, act on the module the screen reader is focused on, just
-	// like P/O/I do (handleRackKey). Without this we'd use a stale currentModule
-	// left over from an earlier interaction, so D would only work after the user
+	// like F2/F3/F4 do (switchToDetailView). Without this we'd use a stale
+	// currentModule left over from an earlier interaction, so Shift+D would only work after the user
 	// had already opened that module's param/port view.
 	if (currentView == RACK) {
 		int row = lvFocused(listRack);
@@ -2892,21 +2892,37 @@ void AccessibleWindow::handleRackKey(WPARAM vk) {
 			});
 		}
 	}
-	else if (vk == 'P' || vk == 'O' || vk == 'I') {
+}
+
+// F2 → INPUT, F3 → OUTPUT, F4 → PARAM. These used to be the bare letters I/O/P,
+// which collided with the ListView's first-letter type-ahead: pressing "o" both
+// opened the output list and jumped the rack selection to a module starting with
+// "o". Function keys produce no character, so every letter is now free for
+// type-ahead — the point of the move.
+//
+// From RACK the target module is the one under the list focus; from a detail view
+// it's the module already open (currentModule), so F2/F3/F4 also switch directly
+// between the three lists without the Tab cycle. Any other view is ignored.
+void AccessibleWindow::switchToDetailView(View v) {
+	if (!APP || !APP->scene || !APP->scene->rack)
+		return;
+
+	if (currentView == RACK) {
 		int row = lvFocused(listRack);
 		if (row < 0)
 			return;
 		LPARAM lp = lvGetParam(listRack, row);
-		if (lp == 0)
+		if (lp == 0)   // free slot: no module to open
 			return;
 		currentModule = reinterpret_cast<app::ModuleWidget*>(lp)->module;
-		if (vk == 'P')
-			switchView(PARAM);
-		else if (vk == 'O')
-			switchView(OUTPUT);
-		else
-			switchView(INPUT);
 	}
+	else if (currentView != PARAM && currentView != OUTPUT && currentView != INPUT) {
+		return;
+	}
+
+	if (!currentModule)
+		return;
+	switchView(v);
 }
 
 // ── Actions: library ─────────────────────────────────────────────────────────
@@ -3335,11 +3351,19 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 		return DefSubclassProc(hwnd, msg, wp, lp);
 	}
 
+	// Drop the character left behind by a consumed letter shortcut (swallowChar()).
+	// Placed after the search sanctuary so typing in the search box is untouched.
+	if ((msg == WM_CHAR || msg == WM_SYSCHAR) && self->swallowNextChar) {
+		self->swallowNextChar = false;
+		return 0;
+	}
+
 	// Shift+K toggles the computer-keyboard MIDI mode (in either state).
 	if (msg == WM_KEYDOWN && wp == 'K'
 	    && (GetKeyState(VK_SHIFT) & 0x8000)
 	    && !(GetKeyState(VK_CONTROL) & 0x8000)) {
 		self->toggleMidiKeyboard();
+		self->swallowChar();   // after the toggle: turning the mode off clears the flag
 		return 0;
 	}
 
@@ -3372,10 +3396,8 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				return 0;
 			}
 		}
-		else if ((msg == WM_CHAR || msg == WM_SYSCHAR) && self->swallowNextChar) {
-			self->swallowNextChar = false;            // suppress the note's typeahead
-			return 0;
-		}
+		// (The trailing WM_CHAR of a routed note is dropped by the generic
+		// swallowNextChar check above.)
 	}
 
 	// WM_CONTEXTMENU is sent by the system for both the Application key and
@@ -3696,7 +3718,8 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 
 			case 'R':
 				// Shift+R: go to RACK view (Ctrl+R is now randomize selection).
-				if (shift) {
+				if (shift && !ctrl) {
+					self->swallowChar();
 					if (self->currentView == RACK)
 						self->rackDirty = true;
 					self->switchView(RACK);
@@ -3705,35 +3728,21 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				break;
 			case 'L':
 				// Shift+L: go to LIBRARY view (Ctrl+L freed for future use).
-				if (shift) {
+				if (shift && !ctrl) {
+					self->swallowChar();
 					self->switchView(LIBRARY);
 					return 0;
 				}
 				break;
-			case 'P':
-				if (self->currentView == RACK) {
-					self->handleRackKey('P');
-					return 0;
-				}
-				break;
-			case 'O':
-				if (self->currentView == RACK) {
-					self->handleRackKey('O');
-					return 0;
-				}
-				break;
-			case 'I':
-				if (self->currentView == RACK) {
-					self->handleRackKey('I');
-					return 0;
-				}
-				break;
 			case 'D':
-				// Open the focused module's clickable displays — RACK only. In the
-				// PARAM/INPUT/OUTPUT lists a bare letter must stay available for the
-				// ListView's first-letter type-ahead, so we don't intercept 'D' there
-				// (otherwise navigating to a "d…" row would trigger the display list).
-				if (self->currentView == RACK) {
+				// Shift+D opens the clickable displays of the focused module (RACK) or
+				// of the module already open (PARAM/OUTPUT/INPUT). It was a bare 'D'
+				// until the letters were freed for type-ahead — which is also why it
+				// was RACK-only before. Ctrl+D / Ctrl+Shift+D stay "duplicate module",
+				// handled above.
+				if (shift && !ctrl && self->currentView != CONTEXT_MENU
+				    && self->currentView != LIBRARY) {
+					self->swallowChar();
 					self->handleDisplayKey();
 					return 0;
 				}
@@ -3802,6 +3811,24 @@ LRESULT CALLBACK AccessibleWindow::ChildSubclassProc(
 				// Open the Rack manual in the system browser (same as F1 in the
 				// standard GUI).
 				system::openBrowser("https://vcvrack.com/manual/");
+				return 0;
+
+			// F2/F3/F4 replace the old I/O/P letters (see switchToDetailView).
+			case VK_F2:
+				self->switchToDetailView(INPUT);
+				return 0;
+			case VK_F3:
+				self->switchToDetailView(OUTPUT);
+				return 0;
+			case VK_F4:
+				self->switchToDetailView(PARAM);
+				return 0;
+
+			case VK_F5:
+				// Module-specific context menu — the same thing Ctrl+Application
+				// key opens (which arrives as WM_CONTEXTMENU, handled above).
+				if (self->currentView != CONTEXT_MENU)
+					self->handleModuleSpecificContextMenuKey();
 				return 0;
 		}
 	}

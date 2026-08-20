@@ -1357,13 +1357,33 @@ static void onRackDelete(AccessibleWindow* self) {
 	}
 }
 
-static void onRackPOI(AccessibleWindow* self, char which) {
-	AXRow* r = focusedRackRow(self);
-	if (!r || r->freeSlot)
+// F2 → INPUT, F3 → OUTPUT, F4 → PARAM. These were the bare letters I/O/P until they
+// collided with NSTableView's type-select in the rack grid (pressing "o" both opened
+// the output list and jumped the selection to a module starting with "o"); function
+// keys carry no character, so every letter stays free for type-select.
+//
+// From RACK the target is the focused row's module; from a detail view it's the module
+// already open, so the three keys also switch directly between the lists (Tab still
+// cycles). Any other view is ignored.
+static void switchToDetailView(AccessibleWindow* self, AXView v) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (in->currentView == AX_RACK) {
+		AXRow* r = focusedRackRow(self);
+		if (!r || r->freeSlot)
+			return;
+		in->currentModule = r->mw->module;
+	}
+	else if (in->currentView != AX_PARAM && in->currentView != AX_OUTPUT
+	         && in->currentView != AX_INPUT) {
 		return;
-	self->internal->currentModule = r->mw->module;
-	switchTo(self, which == 'P' ? AX_PARAM : (which == 'O' ? AX_OUTPUT : AX_INPUT));
+	}
+	if (!in->currentModule)
+		return;
+	switchTo(self, v);
 }
+
+// Function-key codes shared by the table subclasses below (macOS virtual key codes).
+enum { AX_KC_F2 = 120, AX_KC_F3 = 99, AX_KC_F4 = 118, AX_KC_F5 = 96 };
 
 // ── PARAM key handlers ───────────────────────────────────────────────────────
 // The ParamQuantity behind the focused row, or nullptr. Fills *outRow with the row.
@@ -1996,7 +2016,7 @@ static void onContextMenuKey(AccessibleWindow* self) {
 	}
 }
 
-// Module-specific trigger (Cmd+Shift+M): the focused module in RACK, otherwise the
+// Module-specific trigger (F5 / Cmd+Shift+M): the focused module in RACK, otherwise the
 // currentModule whose detail view is open. Mirrors handleModuleSpecificContextMenuKey.
 static void onModuleSpecificContextMenuKey(AccessibleWindow* self) {
 	AccessibleWindow::Internal* in = self->internal;
@@ -2015,7 +2035,7 @@ static void onModuleSpecificContextMenuKey(AccessibleWindow* self) {
 	buildModuleSpecificContextMenu(self, mw);
 }
 
-// ── Display cells (D key) — Tier A menus + Tier B MIDI learn ──────────────────
+// ── Display cells (Shift+D) — Tier A menus + Tier B MIDI learn ────────────────
 // Walk a widget subtree collecting LedDisplayChoice cells; don't recurse into one (its
 // children are rendering details). step() refreshes the cell's text first.
 static void collectDisplayCellsRec(widget::Widget* w, std::vector<AXDisplayCell>& out) {
@@ -2087,8 +2107,8 @@ static void openDisplayCell(AccessibleWindow* self, app::LedDisplayChoice* choic
 	                  "In apprendimento — premi il controllo MIDI. Spazio = toggle. Esc = annulla."));
 }
 
-// D key: open the focused module's clickable-display list as a context menu. Works from
-// RACK (acts on the focused module, like P/O/I) and from PARAM (uses currentModule).
+// Shift+D: open the focused module's clickable-display list as a context menu. Works from
+// RACK (acts on the focused module, like F2/F3/F4) and from the detail views (currentModule).
 static void onDisplayKey(AccessibleWindow* self) {
 	if (!APP || !APP->scene || !APP->scene->rack)
 		return;
@@ -2390,6 +2410,14 @@ static void showLayer(AccessibleWindow* self) {
 		switchTo(owner, AX_LIBRARY);
 		return;
 	}
+	// Shift+R while already in RACK rebuilds the list — the Win32 twin sets rackDirty and
+	// re-enters the view, so the shortcut doubles as a manual refresh when the patch has
+	// changed behind our back.
+	if (shift && [ch isEqualToString:@"r"]) {
+		owner->internal->rackDirty = true;
+		switchTo(owner, AX_RACK);
+		return;
+	}
 	// Arrow keys drive the 2D spatial grid: Left/Right within a row, Up/Down between rows.
 	// NSTableView's native Up/Down (linear) would step through every cell in sequence, so
 	// we replace all four with navigateRack to mirror the Win32 icon-view navigation.
@@ -2417,10 +2445,12 @@ static void showLayer(AccessibleWindow* self) {
 		onRackToggleSelect(owner);
 		return;
 	}
-	if ([ch isEqualToString:@"p"]) { onRackPOI(owner, 'P'); return; }
-	if ([ch isEqualToString:@"o"]) { onRackPOI(owner, 'O'); return; }
-	if ([ch isEqualToString:@"i"]) { onRackPOI(owner, 'I'); return; }
-	if ([ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
+	if (kc == AX_KC_F2) { switchToDetailView(owner, AX_INPUT);  return; }
+	if (kc == AX_KC_F3) { switchToDetailView(owner, AX_OUTPUT); return; }
+	if (kc == AX_KC_F4) { switchToDetailView(owner, AX_PARAM);  return; }
+	if (kc == AX_KC_F5) { onModuleSpecificContextMenuKey(owner); return; }
+	// Shift+D: clickable displays (a bare "d" now belongs to type-select).
+	if (shift && [ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
 	[super keyDown:e];
 }
 @end
@@ -2494,10 +2524,14 @@ static void showLayer(AccessibleWindow* self) {
 		return;
 	}
 
+	if (kc == AX_KC_F2) { switchToDetailView(owner, AX_INPUT);  return; }
+	if (kc == AX_KC_F3) { switchToDetailView(owner, AX_OUTPUT); return; }
+	if (kc == AX_KC_F4) { switchToDetailView(owner, AX_PARAM);  return; }
+	if (kc == AX_KC_F5) { onModuleSpecificContextMenuKey(owner); return; }
 	if (shift && [ch isEqualToString:@"r"]) { switchTo(owner, AX_RACK); return; }
 	if (shift && [ch isEqualToString:@"l"]) { switchTo(owner, AX_LIBRARY); return; }
-	if ([ch isEqualToString:@"v"]) { onParamKey(owner, 'V', false, false); return; }
-	if ([ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
+	// Shift+D: clickable displays of the module being edited.
+	if (shift && [ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
 	[super keyDown:e];
 }
 @end
@@ -2556,8 +2590,14 @@ static void showLayer(AccessibleWindow* self) {
 		}
 		return;
 	}
+	if (kc == AX_KC_F2) { switchToDetailView(owner, AX_INPUT);  return; }
+	if (kc == AX_KC_F3) { switchToDetailView(owner, AX_OUTPUT); return; }
+	if (kc == AX_KC_F4) { switchToDetailView(owner, AX_PARAM);  return; }
+	if (kc == AX_KC_F5) { onModuleSpecificContextMenuKey(owner); return; }
 	if (shift && [ch isEqualToString:@"r"]) { switchTo(owner, AX_RACK); return; }
 	if (shift && [ch isEqualToString:@"l"]) { switchTo(owner, AX_LIBRARY); return; }
+	// Shift+D: clickable displays of the module whose ports are open.
+	if (shift && [ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
 	[super keyDown:e];
 }
 @end
