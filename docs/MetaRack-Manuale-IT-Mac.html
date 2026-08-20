@@ -54,7 +54,7 @@ qualsiasi momento dalla barra dei menù con <em>Aiuto → Manuale</em>.</p>
   <li><a href="#cavi">8. Collegare i cavi</a></li>
   <li><a href="#selezione">9. Selezione multipla di moduli</a></li>
   <li><a href="#contestuali">10. Menu contestuali dei moduli</a></li>
-  <li><a href="#display">11. Display cliccabili (tasto D)</a></li>
+  <li><a href="#display">11. Display cliccabili (Shift+D)</a></li>
   <li><a href="#tastiera-midi">12. Suonare note dalla tastiera del computer (Shift+K)</a></li>
   <li><a href="#menubar">13. La barra dei menù</a></li>
   <li><a href="#scorciatoie">14. Riepilogo delle scorciatoie da tastiera</a></li>
@@ -121,14 +121,28 @@ che riporta brevi messaggi contestuali (esiti di operazioni, suggerimenti).</p>
 <tbody>
 <tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Vai alla vista <strong>Rack</strong> (se ci sei già, forza l'aggiornamento della vista).</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Vai alla vista <strong>Libreria</strong>.</td></tr>
-<tr><td><kbd>P</kbd></td><td>Dalla vista Rack: apri i <strong>Parametri</strong> del modulo focalizzato.</td></tr>
-<tr><td><kbd>O</kbd></td><td>Dalla vista Rack: apri le <strong>Uscite</strong> del modulo focalizzato.</td></tr>
-<tr><td><kbd>I</kbd></td><td>Dalla vista Rack: apri gli <strong>Ingressi</strong> del modulo focalizzato.</td></tr>
+<tr><td><kbd>F2</kbd></td><td>Apri gli <strong>Ingressi</strong>: dalla vista Rack quelli del modulo focalizzato, da un elenco del modulo quelli del modulo già aperto.</td></tr>
+<tr><td><kbd>F3</kbd></td><td>Apri le <strong>Uscite</strong> (stessa regola).</td></tr>
+<tr><td><kbd>F4</kbd></td><td>Apri i <strong>Parametri</strong> (stessa regola).</td></tr>
 <tr><td><kbd>Tab</kbd></td><td>Dentro un modulo, cicla in avanti: Parametri → Uscite → Ingressi → Parametri.</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cicla all'indietro: Parametri → Ingressi → Uscite → Parametri.</td></tr>
 <tr><td><kbd>Esc</kbd></td><td>Annulla un cavo in sospeso; oppure, se non c'è nulla in sospeso, torna alla vista Rack.</td></tr>
 </tbody>
 </table>
+
+<div class="note">
+<p><strong>I tasti funzione su Mac.</strong> Sulle tastiere Apple la fila in alto
+controlla di norma luminosità, Mission Control, volume e simili: premendo <kbd>F2</kbd>
+cambieresti la luminosità invece di aprire gli Ingressi. Per avere il tasto funzione
+vero e proprio hai due strade:</p>
+<ul>
+  <li>tenere premuto <kbd>Fn</kbd> insieme al tasto (per esempio <kbd>Fn</kbd>+<kbd>F2</kbd>);</li>
+  <li>oppure invertire il comportamento una volta per tutte in <em>Impostazioni di Sistema
+  → Tastiera → Abbreviazioni da tastiera… → Tasti funzione</em>, attivando <em>«Usa i tasti
+  F1, F2 ecc. come tasti funzione standard»</em>. Da quel momento <kbd>F2</kbd> fa quello che
+  descrive questo manuale, e sono le funzioni di sistema a richiedere <kbd>Fn</kbd>.</li>
+</ul>
+</div>
 
 <h2 id="rack">4. La vista Rack: la griglia dei moduli</h2>
 
@@ -139,7 +153,8 @@ su una o più file. MetaRack riproduce fedelmente questa disposizione come una
 <ul>
   <li>Le frecce <kbd>←</kbd> e <kbd>→</kbd> scorrono i moduli <strong>dentro la stessa fila</strong>.</li>
   <li>Le frecce <kbd>↑</kbd> e <kbd>↓</kbd> saltano <strong>tra le file</strong> (quando ce n'è più di una).</li>
-  <li>Puoi anche raggiungere un modulo digitando l'iniziale del nome.</li>
+  <li>Puoi anche raggiungere un modulo digitando l'iniziale del nome. Lo stesso vale negli
+  elenchi di parametri e di porte: nessuna scorciatoia occupa più una lettera semplice.</li>
 </ul>
 
 <p>Per ogni elemento, VoiceOver annuncia il nome del modulo seguito dalla
@@ -197,9 +212,11 @@ singoli moduli che ciascuno offre.</p>
 
 <h2 id="parametri">6. Parametri, ingressi e uscite</h2>
 
-<p>Ogni modulo ha tre elenchi distinti, raggiungibili dalla vista Rack con
-<kbd>P</kbd>, <kbd>O</kbd>, <kbd>I</kbd> oppure ciclabili con <kbd>Tab</kbd> /
-<kbd>Shift</kbd>+<kbd>Tab</kbd>:</p>
+<p>Ogni modulo ha tre elenchi distinti, raggiungibili con <kbd>F2</kbd> (Ingressi),
+<kbd>F3</kbd> (Uscite) e <kbd>F4</kbd> (Parametri) oppure ciclabili con <kbd>Tab</kbd> /
+<kbd>Shift</kbd>+<kbd>Tab</kbd>. Dalla vista Rack i tre tasti agiscono sul modulo a fuoco;
+quando sei già dentro un modulo saltano direttamente da un elenco all'altro, senza tornare
+al rack:</p>
 
 <ul>
   <li><strong>Parametri</strong> — manopole, cursori, interruttori e pulsanti. Ogni
@@ -299,7 +316,7 @@ moduli: <em>azzera parametri</em>, <em>randomizza parametri</em>, <em>disconnett
 <em>elimina</em>.</p>
 
 <h3>Menu contestuale specifico del modulo</h3>
-<p>Premi <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> (dalle viste Rack, Parametri,
+<p>Premi <kbd>F5</kbd>, oppure <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> (dalle viste Rack, Parametri,
 Uscite o Ingressi). Si apre l'elenco delle opzioni <strong>specifiche</strong> di
 quel modulo — le stesse che nell'interfaccia grafica appaiono in fondo al menu
 contestuale. Per esempio, nel modulo MIDI-to-CV trovi: numero di canali di polifonia,
@@ -318,7 +335,7 @@ modulo documenta e che non è esposto come parametro o porta.</p>
 </table>
 <p>Le voci attive con un segno di spunta vengono annunciate come «selezionato».</p>
 
-<h2 id="display">11. Display cliccabili (tasto D)</h2>
+<h2 id="display">11. Display cliccabili (Shift+D)</h2>
 
 <p>Alcuni moduli hanno sul pannello dei piccoli display testuali che, nell'interfaccia
 grafica, si cliccano per scegliere un'opzione: per esempio la scheda audio e la
@@ -326,9 +343,9 @@ frequenza di campionamento nel modulo Audio, il dispositivo e il canale nei modu
 MIDI, oppure la cella «learn» nel MIDI-CC. Non sono né parametri né porte, quindi
 non compaiono negli elenchi consueti.</p>
 
-<p>Dalla vista <strong>Rack</strong> o <strong>Parametri</strong>, premi
-<kbd>D</kbd> (senza modificatori) per elencare i display cliccabili del modulo
-corrente. Da lì:</p>
+<p>Dalle viste <strong>Rack</strong>, <strong>Parametri</strong>, <strong>Uscite</strong>
+o <strong>Ingressi</strong>, premi <kbd>Shift</kbd>+<kbd>D</kbd> per elencare i display
+cliccabili del modulo corrente. Da lì:</p>
 
 <ul>
   <li><strong>Display a menù</strong> (es. scelta della scheda audio): <kbd>Invio</kbd>
@@ -351,7 +368,7 @@ ci serve normalmente per navigare l'interfaccia, questa funzione si
 annuncia «Tastiera MIDI attivata» oppure «Tastiera MIDI disattivata».</p>
 
 <p>Prima di suonare devi dire a un modulo MIDI di ascoltare la tastiera del computer.
-Aggiungi per esempio un modulo <strong>MIDI-CV</strong>, premi <kbd>D</kbd> per aprire
+Aggiungi per esempio un modulo <strong>MIDI-CV</strong>, premi <kbd>Shift</kbd>+<kbd>D</kbd> per aprire
 i suoi display cliccabili e scegli il dispositivo <em>«Computer keyboard»</em>.
 Collega poi l'uscita V/Oct (e Gate) del MIDI-CV a un oscillatore, così senti le note.</p>
 
@@ -369,11 +386,13 @@ Collega poi l'uscita V/Oct (e Gate) del MIDI-CV a un oscillatore, così senti le
   producono una nota vengono «catturati» dal sintetizzatore.</li>
 </ul>
 
-<p>Di conseguenza, mentre la modalità è accesa, i salti rapidi a lettera singola
-<kbd>P</kbd>, <kbd>O</kbd>, <kbd>I</kbd> e <kbd>D</kbd> suonano una nota invece di
-cambiare vista: per spostarti usa le frecce o <kbd>Tab</kbd>, oppure spegni la
-tastiera MIDI con <kbd>Shift</kbd>+<kbd>K</kbd>. Quando spegni la modalità, le note
-eventualmente ancora premute vengono rilasciate, così nessun suono resta bloccato.</p>
+<p>Poiché le scorciatoie di navigazione stanno tutte su tasti funzione o combinazioni,
+<kbd>F2</kbd>, <kbd>F3</kbd>, <kbd>F4</kbd>, <kbd>F5</kbd> e <kbd>Shift</kbd>+<kbd>D</kbd>
+continuano a funzionare anche con la tastiera MIDI accesa. Quello che perdi è la ricerca
+per iniziale negli elenchi: le lettere suonano una nota, quindi per spostarti usa le frecce
+o <kbd>Tab</kbd>, oppure spegni la tastiera MIDI con <kbd>Shift</kbd>+<kbd>K</kbd>. Quando
+spegni la modalità, le note eventualmente ancora premute vengono rilasciate, così nessun
+suono resta bloccato.</p>
 
 <h2 id="menubar">13. La barra dei menù</h2>
 
@@ -434,12 +453,12 @@ selezionandolo (il cambio richiede il riavvio del programma).</p>
 <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Salta tra le file.</td></tr>
 <tr><td><kbd>Invio</kbd></td><td>Apri i Parametri del modulo / inserisci sullo slot libero.</td></tr>
 <tr><td><kbd>Cmd</kbd>+<kbd>Invio</kbd></td><td>Sposta il modulo su una nuova fila.</td></tr>
-<tr><td><kbd>P</kbd> / <kbd>O</kbd> / <kbd>I</kbd></td><td>Vai a Parametri / Uscite / Ingressi del modulo.</td></tr>
-<tr><td><kbd>D</kbd></td><td>Elenca i display cliccabili del modulo.</td></tr>
+<tr><td><kbd>F2</kbd> / <kbd>F3</kbd> / <kbd>F4</kbd></td><td>Vai a Ingressi / Uscite / Parametri del modulo.</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>D</kbd></td><td>Elenca i display cliccabili del modulo.</td></tr>
 <tr><td><kbd>Spazio</kbd></td><td>Aggiungi/togli il modulo dalla selezione multipla.</td></tr>
 <tr><td><kbd>Backspace</kbd> / <kbd>Fn</kbd>+<kbd>Backspace</kbd></td><td>Elimina il modulo (o l'intera selezione).</td></tr>
 <tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Menu contestuale generico.</td></tr>
-<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
+<tr><td><kbd>F5</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
 </tbody>
 </table>
 
@@ -454,9 +473,10 @@ selezionandolo (il cambio richiede il riavvio del programma).</p>
 <tr><td><kbd>Spazio</kbd></td><td>Interruttore a stati / pulsante momentaneo.</td></tr>
 <tr><td><kbd>Backspace</kbd></td><td>Riporta al valore predefinito.</td></tr>
 <tr><td><kbd>Invio</kbd></td><td>Apri «Imposta valore».</td></tr>
-<tr><td><kbd>D</kbd></td><td>Elenca i display cliccabili del modulo.</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>D</kbd></td><td>Elenca i display cliccabili del modulo.</td></tr>
 <tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Menu contestuale del parametro.</td></tr>
-<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
+<tr><td><kbd>F5</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
+<tr><td><kbd>F2</kbd> / <kbd>F3</kbd> / <kbd>F4</kbd></td><td>Salta a Ingressi / Uscite / Parametri dello stesso modulo.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cicla tra Parametri / Uscite / Ingressi.</td></tr>
 </tbody>
 </table>
@@ -467,7 +487,8 @@ selezionandolo (il cambio richiede il riavvio del programma).</p>
 <tbody>
 <tr><td><kbd>Invio</kbd></td><td>Inizia un cavo (primo Invio) o completalo (secondo Invio su porta compatibile).</td></tr>
 <tr><td><kbd>Backspace</kbd> / <kbd>Fn</kbd>+<kbd>Backspace</kbd></td><td>Scollega i cavi sulla porta a fuoco.</td></tr>
-<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
+<tr><td><kbd>F5</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Menu contestuale specifico del modulo.</td></tr>
+<tr><td><kbd>F2</kbd> / <kbd>F3</kbd> / <kbd>F4</kbd></td><td>Salta a Ingressi / Uscite / Parametri dello stesso modulo.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cicla tra Parametri / Uscite / Ingressi.</td></tr>
 </tbody>
 </table>

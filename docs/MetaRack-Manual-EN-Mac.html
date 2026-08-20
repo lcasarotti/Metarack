@@ -53,7 +53,7 @@ menu bar with <em>Help → Manual</em>.</p>
   <li><a href="#cables">8. Patching cables</a></li>
   <li><a href="#selection">9. Multiple module selection</a></li>
   <li><a href="#context">10. Module context menus</a></li>
-  <li><a href="#displays">11. Clickable displays (D key)</a></li>
+  <li><a href="#displays">11. Clickable displays (Shift+D)</a></li>
   <li><a href="#midi-keyboard">12. Playing notes from the computer keyboard (Shift+K)</a></li>
   <li><a href="#menubar">13. The menu bar</a></li>
   <li><a href="#shortcuts">14. Keyboard shortcut reference</a></li>
@@ -119,14 +119,28 @@ short contextual messages (operation results, hints).</p>
 <tbody>
 <tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Go to the <strong>Rack</strong> view (if already there, force-refresh the list).</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Go to the <strong>Library</strong> view.</td></tr>
-<tr><td><kbd>P</kbd></td><td>From the Rack view: open the focused module's <strong>Parameters</strong>.</td></tr>
-<tr><td><kbd>O</kbd></td><td>From the Rack view: open the focused module's <strong>Outputs</strong>.</td></tr>
-<tr><td><kbd>I</kbd></td><td>From the Rack view: open the focused module's <strong>Inputs</strong>.</td></tr>
+<tr><td><kbd>F2</kbd></td><td>Open the <strong>Inputs</strong>: from the Rack view those of the focused module, from a module list those of the module already open.</td></tr>
+<tr><td><kbd>F3</kbd></td><td>Open the <strong>Outputs</strong> (same rule).</td></tr>
+<tr><td><kbd>F4</kbd></td><td>Open the <strong>Parameters</strong> (same rule).</td></tr>
 <tr><td><kbd>Tab</kbd></td><td>Within a module, cycle forward: Parameters → Outputs → Inputs → Parameters.</td></tr>
 <tr><td><kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle backward: Parameters → Inputs → Outputs → Parameters.</td></tr>
 <tr><td><kbd>Esc</kbd></td><td>Cancel a pending cable; or, if nothing is pending, return to the Rack view.</td></tr>
 </tbody>
 </table>
+
+<div class="note">
+<p><strong>Function keys on a Mac.</strong> On Apple keyboards the top row normally
+controls brightness, Mission Control, volume and the like, so pressing <kbd>F2</kbd> would
+change the screen brightness instead of opening the Inputs. There are two ways to get the
+real function key:</p>
+<ul>
+  <li>hold <kbd>Fn</kbd> together with the key (for example <kbd>Fn</kbd>+<kbd>F2</kbd>);</li>
+  <li>or reverse the behaviour once and for all in <em>System Settings &rarr; Keyboard &rarr;
+  Keyboard Shortcuts&hellip; &rarr; Function Keys</em>, turning on <em>"Use F1, F2, etc. keys as
+  standard function keys"</em>. From then on <kbd>F2</kbd> does what this manual describes,
+  and it is the system functions that need <kbd>Fn</kbd>.</li>
+</ul>
+</div>
 
 <h2 id="rack">4. The Rack view: the module grid</h2>
 
@@ -136,7 +150,8 @@ MetaRack faithfully reproduces this layout as a <strong>two-dimensional grid</st
 <ul>
   <li><kbd>←</kbd> and <kbd>→</kbd> move through modules <strong>within the same row</strong>.</li>
   <li><kbd>↑</kbd> and <kbd>↓</kbd> jump <strong>between rows</strong> (when there is more than one).</li>
-  <li>You can also type a module's initial letter to jump to it (type-ahead search).</li>
+  <li>You can also type a module's initial letter to jump to it (type-ahead search). The
+  same works in the parameter and port lists: no shortcut takes up a plain letter any more.</li>
 </ul>
 
 <p>For each item, VoiceOver announces the module name followed by its position, in the
@@ -193,9 +208,11 @@ individual modules each one offers.</p>
 
 <h2 id="params">6. Parameters, inputs and outputs</h2>
 
-<p>Every module has three separate lists, reached from the Rack view with
-<kbd>P</kbd>, <kbd>O</kbd>, <kbd>I</kbd>, or cycled with <kbd>Tab</kbd> /
-<kbd>Shift</kbd>+<kbd>Tab</kbd>:</p>
+<p>Every module has three separate lists, reached with <kbd>F2</kbd> (Inputs),
+<kbd>F3</kbd> (Outputs) and <kbd>F4</kbd> (Parameters), or cycled with <kbd>Tab</kbd> /
+<kbd>Shift</kbd>+<kbd>Tab</kbd>. From the Rack view the three keys act on the focused
+module; once you are inside a module they jump straight from one list to another, without
+going back to the rack:</p>
 
 <ul>
   <li><strong>Parameters</strong> — knobs, sliders, switches and buttons. Each row
@@ -293,7 +310,7 @@ opens with the actions common to all modules: <em>reset parameters</em>,
 <em>duplicate</em> (with and without cables), <em>delete</em>.</p>
 
 <h3>Module-specific context menu</h3>
-<p>Press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> (from the Rack, Parameters,
+<p>Press <kbd>F5</kbd>, or <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> (from the Rack, Parameters,
 Outputs or Inputs views). This opens the list of options <strong>specific</strong>
 to that module — the same ones that, in the graphical interface, appear at the
 bottom of its context menu. For example, on a MIDI-to-CV you find: polyphony channel
@@ -312,7 +329,7 @@ is not exposed as a parameter or a port.</p>
 </table>
 <p>Items that are active with a checkmark are announced as "selected".</p>
 
-<h2 id="displays">11. Clickable displays (D key)</h2>
+<h2 id="displays">11. Clickable displays (Shift+D)</h2>
 
 <p>Some modules have small text displays on their panel that, in the graphical
 interface, you click to choose an option: for example the audio device and sample
@@ -320,9 +337,9 @@ rate on the Audio module, the device and channel on the MIDI modules, or the "le
 cell of the MIDI-CC module. These are neither parameters nor ports, so they do not
 appear in the usual lists.</p>
 
-<p>From the <strong>Rack</strong> or <strong>Parameters</strong> view, press
-<kbd>D</kbd> (no modifiers) to list the current module's clickable displays. From
-there:</p>
+<p>From the <strong>Rack</strong>, <strong>Parameters</strong>, <strong>Outputs</strong>
+or <strong>Inputs</strong> view, press <kbd>Shift</kbd>+<kbd>D</kbd> to list the current
+module's clickable displays. From there:</p>
 
 <ul>
   <li><strong>Menu displays</strong> (e.g. choosing the audio device): <kbd>Enter</kbd>
@@ -344,7 +361,7 @@ navigate the interface, this feature is <strong>turned on and off</strong> with
 "MIDI keyboard off".</p>
 
 <p>Before you can play, you must tell a MIDI module to listen to the computer
-keyboard. For example add a <strong>MIDI-CV</strong> module, press <kbd>D</kbd> to
+keyboard. For example add a <strong>MIDI-CV</strong> module, press <kbd>Shift</kbd>+<kbd>D</kbd> to
 open its clickable displays and choose the <em>"Computer keyboard"</em> device. Then
 patch the MIDI-CV's V/Oct (and Gate) output into an oscillator so you can hear the
 notes.</p>
@@ -364,11 +381,12 @@ notes.</p>
   "captured" by the synthesizer.</li>
 </ul>
 
-<p>As a result, while the mode is on the single-letter jumps <kbd>P</kbd>,
-<kbd>O</kbd>, <kbd>I</kbd> and <kbd>D</kbd> play a note instead of switching view: to
-move around use the arrows or <kbd>Tab</kbd>, or turn the MIDI keyboard off with
-<kbd>Shift</kbd>+<kbd>K</kbd>. When you turn the mode off, any notes still held down
-are released, so no sound gets stuck.</p>
+<p>Because every navigation shortcut now lives on a function key or a combination,
+<kbd>F2</kbd>, <kbd>F3</kbd>, <kbd>F4</kbd>, <kbd>F5</kbd> and <kbd>Shift</kbd>+<kbd>D</kbd>
+keep working while the MIDI keyboard is on. What you lose is type-ahead search in the
+lists: the letters play a note, so move around with the arrows or <kbd>Tab</kbd>, or turn
+the MIDI keyboard off with <kbd>Shift</kbd>+<kbd>K</kbd>. When you turn the mode off, any
+notes still held down are released, so no sound gets stuck.</p>
 
 <h2 id="menubar">13. The menu bar</h2>
 
@@ -429,12 +447,12 @@ it (the change requires restarting the program).</p>
 <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Jump between rows.</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>Open the module's Parameters / insert on a free slot.</td></tr>
 <tr><td><kbd>Cmd</kbd>+<kbd>Enter</kbd></td><td>Move the module to a new row.</td></tr>
-<tr><td><kbd>P</kbd> / <kbd>O</kbd> / <kbd>I</kbd></td><td>Go to the module's Parameters / Outputs / Inputs.</td></tr>
-<tr><td><kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
+<tr><td><kbd>F2</kbd> / <kbd>F3</kbd> / <kbd>F4</kbd></td><td>Go to the module's Inputs / Outputs / Parameters.</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
 <tr><td><kbd>Space</kbd></td><td>Add/remove the module from the multiple selection.</td></tr>
 <tr><td><kbd>Delete</kbd> / <kbd>Fn</kbd>+<kbd>Delete</kbd></td><td>Delete the module (or the whole selection).</td></tr>
 <tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Generic context menu.</td></tr>
-<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
+<tr><td><kbd>F5</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
 </tbody>
 </table>
 
@@ -449,9 +467,10 @@ it (the change requires restarting the program).</p>
 <tr><td><kbd>Space</kbd></td><td>Latching switch / momentary button.</td></tr>
 <tr><td><kbd>Delete</kbd></td><td>Reset to default value.</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>Open "Set value".</td></tr>
-<tr><td><kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>D</kbd></td><td>List the module's clickable displays.</td></tr>
 <tr><td><kbd>Cmd</kbd>+<kbd>M</kbd></td><td>Parameter context menu.</td></tr>
-<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
+<tr><td><kbd>F5</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
+<tr><td><kbd>F2</kbd> / <kbd>F3</kbd> / <kbd>F4</kbd></td><td>Jump to the same module's Inputs / Outputs / Parameters.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle between Parameters / Outputs / Inputs.</td></tr>
 </tbody>
 </table>
@@ -462,7 +481,8 @@ it (the change requires restarting the program).</p>
 <tbody>
 <tr><td><kbd>Enter</kbd></td><td>Start a cable (first Enter) or complete it (second Enter on a compatible port).</td></tr>
 <tr><td><kbd>Delete</kbd> / <kbd>Fn</kbd>+<kbd>Delete</kbd></td><td>Disconnect the cables on the focused port.</td></tr>
-<tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
+<tr><td><kbd>F5</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td>Module-specific context menu.</td></tr>
+<tr><td><kbd>F2</kbd> / <kbd>F3</kbd> / <kbd>F4</kbd></td><td>Jump to the same module's Inputs / Outputs / Parameters.</td></tr>
 <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Cycle between Parameters / Outputs / Inputs.</td></tr>
 </tbody>
 </table>
