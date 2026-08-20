@@ -1,0 +1,22 @@
+---
+name: reference_port_name_recovery
+description: "Come l'AccessibleWindow recupera i nomi delle porte \"#N\" dai placement id dell'SVG del pannello; limiti dell'euristica"
+metadata: 
+  node_type: memory
+  type: reference
+  originSessionId: a2f57fc2-8d11-498f-8f41-0e7c2eead322
+---
+
+Alcuni moduli (es. voxglitch Grain Engine Mk2) chiamano solo `config(...)` senza `configInput()/configOutput()`, quindi `PortInfo::name` resta vuoto e `getName()` (in `src/engine/PortInfo.cpp`) ripiega su `#N`, illeggibile allo screen reader. Le etichette visibili nel pannello ("Position", "Jitter"…) sono **outline vettoriali** nell'SVG, non testo leggibile da macchina — quindi irrecuperabili come testo.
+
+**Soluzione (commit f8082b70, branch Screen-Reader-Accessibility):** helper `portSvgId(mw, pw)` in `src/accessible/AccessibleWindow.cpp`. Molti plugin posizionano le porte con la convenzione SvgHelper `panelHelper.findNamed("position_input")` → l'SVG contiene una shape con `id="position_input"` il cui centro-bounds coincide 1:1 col centro del `PortWidget`. L'helper prende `ModuleWidget::getPanel()` → `dynamic_cast<app::SvgPanel*>` → `->svg->handle->shapes` (lista NanoSVG con `id[64]` e `bounds[4]`), trova la shape col centro più vicino (tolleranza ~2px²), e restituisce l'**id grezzo** (scelta di design dell'utente: niente abbellimento). Scarta gli id auto-generati Inkscape/Illustrator (`path1234`, `rect5`, `g12`…) via regex → in quel caso torna a `#N`. Chiamato come fallback SOLO quando `info->name.empty()`, in `refreshPortView()` e `handlePortEnter()`, così i moduli che nominano le porte restano invariati.
+
+**Testato live 2026-07-01: funziona** (Grain Engine Mk2 legge `position_input`, `left_output`, ecc.).
+
+**Port su macOS 2026-07-01:** stesso helper `portSvgId(mw, pw)` replicato in `src/accessible/AccessibleWindowMac.mm` (dentro `namespace rack::accessible`). Chiamato come fallback quando `info->name.empty()` in due punti: `onPortEnter()` (dentro il namespace → chiamata non qualificata) e il datasource `objectValueForTableColumn` di `RackAXController` (che è FUORI dal namespace `rack::accessible`, come `portStatusString`, quindi chiamata qualificata `rack::accessible::portSvgId(...)`). ModuleWidget ottenuto via `APP->scene->rack->getModule(module->id)`. Da compilare/testare sul Mac.
+
+**Riuso per l'estremità remota di un cavo (commit cf9795f0, 2026-07-14):** nella colonna "status" di una porta connessa l'annuncio ora è `→ NomeModulo, NomePorta` (prima solo `→ NomeModulo`). Helper `remotePortName(rack, remote)` in AccessibleWindow.cpp (e gemello senza `rack` in AccessibleWindowMac.mm, che prende rack da `APP->scene->rack`): dal `PortWidget*` remoto ricava `remote->module` + `remote->type` + `remote->portId`, chiede `getOutputInfo/getInputInfo`, e se `info->name.empty()` ripiega su `portSvgId(rmw, remote)` con `rmw = rack->getModule(m->id)`. Degrada al solo nome modulo se non c'è nome porta. Separatore **virgola** (non due punti): legge meglio con la sintesi. Testato live su Windows 2026-07-14.
+
+**Limite noto:** i plugin con id SVG non semantici o assenti (es. **Erica Synths**) sfuggono all'euristica e restano `#N`. Fallback futuro possibile: un piccolo database di override scritto a mano (model → portId → nome). Vedi [[project_accessible_window]].
+
+**Erica Synths — causa radice precisa (analisi DLL 2026-07-13):** decompilando `plugins-win-x64/EricaCopies/plugin.dll` (slug `EricaCopies`, 4 moduli: `BlackWaveTableVCO`, `BlackOctasource`, `PicoDrums`, `FusionDelay`) risulta che **NON esiste alcun simbolo `configInput/configOutput/configPort`**: le porte sono costruite SOLO a livello grafico con `rack::createOutput<jack>(Vec,Module*,int)` + `ModuleWidget::addInput/addOutput(PortWidget*)`. Quindi `Module::inputInfos/outputInfos` non vengono mai popolati → `PortInfo::name` vuoto → `#N`. NON è "nomi mal messi": le porte non sono proprio nominate. In più il fallback SVG è cieco perché octasource.svg & co. hanno solo id auto-generati Illustrator (`SVGID_1_`, `circle299`, `line100`, `g240`…) — nessun `id="wave_input"`. Le etichette del pannello sono outline vettoriali; le uniche stringhe leggibili nel binario (`WAVE`, `CV LEVEL`, `FM LEVEL`, `BANK`, `CVtoFmItem`…) sono nomi di PARAM / voci di menu contestuale, non di porte. L'unica info superstite è l'ORDINE (`portId` = ordine chiamate `createInput/createOutput`). → serve override DB manuale; nomi reali da pannelli/manuale Erica.

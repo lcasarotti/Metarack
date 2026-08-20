@@ -23,14 +23,26 @@ static std::string Ts(const char* en, const char* it) {
 - `T()` per literal wide usati nelle API Win32 (titolo, colonne, menu, dialog).
 - `Ts()` per `std::string` usati in `setStatus()`.
 - Fallback inglese per qualsiasi lingua diversa da `"it"`.
+- Lettura di `settings::language` a ogni chiamata; praticamene fissa per sessione perché il menu Lingua chiede riavvio.
 
-**Why:** La finestra accessibile era tutta in italiano mentre Rack di default è in inglese.
+**Why:** La finestra accessibile era tutta in italiano mentre Rack di default è in inglese — discrepanza con la lingua selezionata dalla barra menù.
+
 **How to apply:** Per aggiungere una terza lingua (es. DE), convertire `T()/Ts()` in una lookup su mappa o aggiungere un terzo parametro + `else if`.
 
 ## Copertura (commit dd3c4569, 2026-06-05)
 
-Titolo finestra, status bar, intestazioni colonne, free slot, stato porta, context menu, dialog, MessageBox rimozione, tutti i `setStatus()`, intera barra dei menù.
+- Titolo finestra, status bar iniziale
+- Intestazioni colonne: Module/Parameter/Value/State/Action
+- Free slot: `"[ Free slot ]"` / `"[ Slot libero ]"`
+- Stato porta non connessa: `"free"` / `"libero"`; nome porta di fallback: `"Port N"` / `"Porta N"`
+- Context menu modulo e parametro, dialog "Set value", MessageBox rimozione
+- Tutti i `setStatus()`: aggiunta/rimozione moduli, cavi, clipboard, apprendimento, ecc.
+- Intera barra dei menù: File/Edit/View/Engine/Library/Help con tutte le voci
 
-## Fix accessorio
+## Fix accessorio nello stesso commit
 
-Colonna HP: rimosso il suffisso `" HP"` dal valore della cella — NVDA annunciava "HP 8 HP". Ora annuncia solo "HP 8".
+Colonna HP della rack view: rimosso il suffisso `" HP"` dal valore della cella — NVDA annunciava "HP 8 HP" (intestazione + valore). Ora annuncia solo "HP 8".
+
+## Stato 2026-06-05
+
+Committato, build MinGW OK. NON ancora verificato dal vivo (richiede avvio Rack con EN poi con IT).
