@@ -273,6 +273,28 @@ static NSString* nsstr(const std::string& s) {
 	return r ? r : @"";
 }
 
+// Alphabetical order as a reader expects it, not as bytes happen to fall.
+//
+// std::string's operator< is ORDINAL: it compares byte by byte, so every uppercase letter
+// sorts before every lowercase one ("Zebra" before "apple") and accented names land after all
+// of ASCII. In the library that means brands like "cf", "impromptu" or "voxglitch" pile up
+// after Z instead of sitting among the others.
+//
+// localizedStandardCompare: is the comparison the Finder uses: case- and accent-aware by the
+// user's locale, and digit-aware, so "Filter 2" precedes "Filter 10" instead of following it.
+// Twin of the Win32 wlessCI (CompareStringEx with LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS).
+static bool lessCI(const std::string& a, const std::string& b) {
+	return [nsstr(a) localizedStandardCompare:nsstr(b)] == NSOrderedAscending;
+}
+
+// Comparator form, for the brand map. Names that compare equal — "4ms" and "4MS" — collapse
+// onto one key, which is exactly the brand merging the tree wants.
+struct LessCI {
+	bool operator()(const std::string& a, const std::string& b) const {
+		return lessCI(a, b);
+	}
+};
+
 static void axSep(NSMenu* m) {
 	[m addItem:[NSMenuItem separatorItem]];
 }
@@ -496,9 +518,9 @@ static void refreshRackView(AccessibleWindow* self,
 static void refreshLibraryView(AccessibleWindow* self) {
 	AccessibleWindow::Internal* in = self->internal;
 
-	// Group models by brand name, merging plugins that share the same brand.
-	// std::map keeps brands in alphabetical order automatically.
-	std::map<std::string, std::vector<plugin::Model*>> byBrand;
+	// Group models by brand name, merging plugins that share the same brand. The map keeps
+	// brands ordered by LessCI — alphabetically as a person reads, not by byte value.
+	std::map<std::string, std::vector<plugin::Model*>, LessCI> byBrand;
 	for (plugin::Plugin* plug : plugin::plugins) {
 		if (!plug)
 			continue;
@@ -513,7 +535,7 @@ static void refreshLibraryView(AccessibleWindow* self) {
 	for (auto& kv : byBrand) {
 		// Sort models alphabetically within each brand.
 		std::sort(kv.second.begin(), kv.second.end(), [](plugin::Model* a, plugin::Model* b) {
-			return a->name < b->name;
+			return lessCI(a->name, b->name);
 		});
 		AXLibNode* brand = [[AXLibNode alloc] init];
 		brand->label = [nsstr(kv.first) retain];
