@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleDevelopmentRegion</key><string>English</string>
+	<key>CFBundleName</key><string>MetaRack</string>
+	<key>CFBundleDisplayName</key><string>MetaRack</string>
+	<key>CFBundleIdentifier</key><string>com.lcasarotti.metarack.vst3</string>
+	<!-- CFBundleExecutable DEVE combaciare col nome del binario in Contents/MacOS
+	     (VST3_TARGET nel Makefile): è così che CFBundle lo trova. -->
+	<key>CFBundleExecutable</key><string>MetaRack</string>
+	<key>CFBundleVersion</key><string>{RACK_VERSION}</string>
+	<key>CFBundleShortVersionString</key><string>{RACK_VERSION}</string>
+	<!-- BNDL: un .vst3 è un bundle caricabile, non un'applicazione. -->
+	<key>CFBundlePackageType</key><string>BNDL</string>
+	<key>CFBundleSignature</key><string>????</string>
+	<key>NSHumanReadableCopyright</key><string>Copyright © Luca Casarotti — GPLv3</string>
+	<key>NSHighResolutionCapable</key><true/>
+	<key>NSMicrophoneUsageDescription</key><string>This is required for using line input from audio interfaces.</string>
+</dict>
+</plist>

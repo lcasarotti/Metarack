@@ -7,6 +7,13 @@
 
 # Generated build artifacts
 compile_commands.json
+# Bundle VST3 prodotto da `make vst3` (gli header travesty in adapters/vst3/ restano tracciati)
+/MetaRack.vst3
+# Harness da console del VST3 e log dell'adapter (build in-tree)
+/RackVst3Test
+/RackVst3Test.exe
+/vst3-log.txt
+/clap-log.txt
 
 # Binaries and build targets
 *.a

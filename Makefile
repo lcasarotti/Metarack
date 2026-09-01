@@ -112,6 +112,178 @@ STANDALONE_OBJECTS += $(TARGET)
 $(STANDALONE_TARGET): $(STANDALONE_SOURCES) $(STANDALONE_OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(STANDALONE_LDFLAGS)
 
+# VST3 adapter scritto a mano: nessun SDK Steinberg e nessun wrapper: adapters/vst3.cpp
+# implementa l'ABI VST3 con gli header travesty (C puro), quindi si costruisce con lo stesso
+# compilatore che produce libRack, invece che con MSVC (Windows) o l'SDK Steinberg. Un .vst3
+# è un BUNDLE su entrambe le piattaforme, ma con layout e problemi diversi — vedi i due rami.
+#
+# WINDOWS: il bundle è una DLL in Contents/x86_64-win e deve portarsi dietro OGNI dipendenza.
+# Windows non cerca le dipendenze di una DLL nella cartella della DLL stessa: il search path
+# parte dall'EXE host, che qui è il DAW (reaper.exe), non noi. Servono:
+#   - libRack.dll
+#   - il runtime MinGW: su Windows libRack NON è linkata staticamente a libstdc++/libgcc
+#     (il -static-libstdc++ del Makefile è solo per ARCH_LIN), quindi le tre DLL vanno
+#     spedite, esattamente come fa il target `dist` per lo standalone.
+#   - nvdaControllerClient.dll, caricata a runtime dalla finestra accessibile.
+# Le prime le chiediamo al compilatore, così non incastriamo a mano la versione del toolchain.
+# Il modulo che l'host carica è uno STUB senza dipendenze (adapters/vst3stub.c), che carica
+# l'adapter vero per percorso assoluto. Senza lo stub, un host con ricerca DLL ristretta
+# (LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) non riesce a risolvere libRack.dll accanto al modulo e
+# il plugin sparisce senza errori: è ciò che facevano Reaper e Ableton. Vedi vst3stub.c.
+#
+# macOS: niente stub. Il binario sta in Contents/MacOS senza estensione, e dyld risolve le
+# dipendenze per @loader_path, cioè relativamente al binario stesso: copiare libRack.dylib
+# accanto e riscrivere l'install name basta a rendere il bundle autosufficiente ovunque.
+VST3_SOURCES += adapters/vst3.cpp adapters/rackhost.cpp
+VST3_STUB_SOURCES += adapters/vst3stub.c
+ifdef ARCH_WIN
+	VST3_BUNDLE := MetaRack.vst3
+	VST3_BUNDLE_DIR := $(VST3_BUNDLE)/Contents/x86_64-win
+	# Su Windows il modulo dentro Contents/x86_64-win DEVE chiamarsi come il bundle.
+	VST3_TARGET := $(VST3_BUNDLE_DIR)/MetaRack.vst3
+	VST3_ADAPTER := $(VST3_BUNDLE_DIR)/RackVst3Adapter.dll
+	VST3_LDFLAGS += -shared
+	# Lo stub non deve dipendere da NESSUNA DLL affiancata, o il problema si riproporrebbe su
+	# di lui: -static-libgcc elimina libgcc_s_seh-1.dll. Restano solo kernel32 e msvcrt, che
+	# stanno in System32 e sono risolvibili con qualunque politica di ricerca dell'host.
+	VST3_STUB_LDFLAGS += -shared -static-libgcc
+	VST3_RUNTIME_DLLS := $(shell $(CXX) -print-file-name=libstdc++-6.dll) \
+	                     $(shell $(CXX) -print-file-name=libgcc_s_seh-1.dll) \
+	                     $(shell $(CXX) -print-file-name=libwinpthread-1.dll)
+endif
+ifdef ARCH_MAC
+	VST3_BUNDLE := MetaRack.vst3
+	VST3_BUNDLE_DIR := $(VST3_BUNDLE)/Contents/MacOS
+	# Il binario del bundle non ha estensione e deve combaciare con CFBundleExecutable
+	# dell'Info.plist, altrimenti CFBundle non lo trova e l'host scarta il plugin in silenzio.
+	VST3_TARGET := $(VST3_BUNDLE_DIR)/MetaRack
+	# Le due parti Cocoa dell'adapter: la protezione attorno a glfwInit (che dentro una DAW
+	# si prenderebbe il delegate di NSApp) e il segnaposto NSView dell'editor.
+	VST3_SOURCES += adapters/rackhost_mac.mm adapters/vst3_mac.mm
+	VST3_LDFLAGS += -bundle -stdlib=libc++ -framework Cocoa
+	# Il linker con -g fa girare dsymutil, che scrive il .dSYM ACCANTO all'output, cioè
+	# dentro il bundle. Va tolto di lì (vedi la regola), ma tenuto: è ciò che simbolica un
+	# crash dentro il DAW.
+	VST3_DSYM := $(VST3_BUNDLE).dSYM
+endif
+VST3_OBJECTS += $(TARGET)
+
+ifdef ARCH_WIN
+$(VST3_ADAPTER): $(VST3_SOURCES) $(VST3_OBJECTS)
+	mkdir -p $(VST3_BUNDLE_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(VST3_LDFLAGS)
+	cp $(TARGET) $(VST3_RUNTIME_DLLS) $(VST3_BUNDLE_DIR)/
+	cp nvdaControllerClient.dll $(VST3_BUNDLE_DIR)/ 2>/dev/null || echo "NB: nvdaControllerClient.dll assente, NVDA non parlerà dal plugin"
+	# -MMD scrive il .d accanto all'output: nel bundle, che spediamo, non ci va.
+	rm -f $(VST3_BUNDLE_DIR)/*.d
+
+$(VST3_TARGET): $(VST3_STUB_SOURCES) $(VST3_ADAPTER)
+	$(CC) $(CFLAGS) -o $@ $(VST3_STUB_SOURCES) $(VST3_STUB_LDFLAGS)
+	rm -f $(VST3_BUNDLE_DIR)/*.d
+endif
+
+ifdef ARCH_MAC
+$(VST3_TARGET): $(VST3_SOURCES) $(VST3_OBJECTS) adapters/vst3/Info.plist
+	mkdir -p $(VST3_BUNDLE_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $(VST3_SOURCES) $(VST3_OBJECTS) $(VST3_LDFLAGS)
+	# libRack.dylib registra un install name RELATIVO ("libRack.dylib"), che dyld non risolve
+	# accanto al modulo. La copiamo nel bundle e riscriviamo la dipendenza come @loader_path,
+	# cioè "la cartella del binario che mi carica": così il .vst3 si carica in qualunque host
+	# e da qualunque cartella, senza DYLD_LIBRARY_PATH.
+	cp $(TARGET) $(VST3_BUNDLE_DIR)/
+	install_name_tool -change $(TARGET) @loader_path/$(TARGET) $@
+	# E ora il rovescio della medaglia. I plugin di terze parti sono compilati dalla build
+	# farm VCV dentro /tmp/Rack2, quindi dichiarano la dipendenza ASSOLUTA
+	# /tmp/Rack2/libRack.dylib (vedi anche mac-librack-link, che per `make run` risolve la
+	# stessa cosa con un symlink). Dentro un DAW quel symlink non c'è, e senza il rimedio
+	# NESSUN plugin dell'utente si carica: il rack resta al solo Core.
+	# Rimedio senza toccare il filesystem: diamo alla COPIA nel bundle proprio quell'install
+	# name. Quando poi plugin.dylib chiede /tmp/Rack2/libRack.dylib, dyld trova un'immagine
+	# GIÀ CARICATA con quel nome e la riusa, senza cercare il file. Il nostro binario non ne
+	# risente: la sua dipendenza è stata riscritta a @loader_path, che è un percorso reale.
+	install_name_tool -id /tmp/Rack2/libRack.dylib $(VST3_BUNDLE_DIR)/$(TARGET)
+	# Senza Info.plist (e senza il CFBundleExecutable giusto) CFBundle non riconosce la
+	# cartella come bundle: l'host la salta senza un errore.
+	mkdir -p $(VST3_BUNDLE)/Contents
+	cp adapters/vst3/Info.plist $(VST3_BUNDLE)/Contents/
+	$(SED) 's/{RACK_VERSION}/$(RACK_VERSION)/g' $(VST3_BUNDLE)/Contents/Info.plist
+	printf 'BNDL????' > $(VST3_BUNDLE)/Contents/PkgInfo
+	# -MMD scrive il .d accanto all'output: nel bundle, che spediamo, non ci va.
+	rm -f $(VST3_BUNDLE_DIR)/*.d
+	# Idem per il .dSYM prodotto da dsymutil: dentro il bundle finirebbe sigillato dalla
+	# firma e copiato da vst3dist. Lo spostiamo accanto al bundle, dove resta utilizzabile
+	# per simbolicare un crash (atos/lldb lo cercano anche lì).
+	rm -rf $(VST3_DSYM)
+	mv $(VST3_BUNDLE_DIR)/MetaRack.dSYM $(VST3_DSYM)
+	# Su Apple Silicon un binario senza firma NON viene caricato, e install_name_tool ha
+	# appena invalidato la firma ad-hoc che il linker aveva applicato: rifirmiamo ad-hoc il
+	# binario e poi il bundle intero (che sigilla anche l'Info.plist).
+	codesign --force --sign - $(VST3_BUNDLE_DIR)/$(TARGET)
+	codesign --force --sign - $(VST3_BUNDLE)
+endif
+
+vst3: $(VST3_TARGET)
+
+# Dev harness: mini-host VST3 da console. Con un ABI scritto a mano è l'unico modo di
+# distinguere "il DAW non lo vede" da "l'ABI è sbagliato".
+VST3TEST_SOURCES += adapters/vst3test.cpp
+ifdef ARCH_WIN
+	VST3TEST_TARGET := RackVst3Test.exe
+	# Linkato staticamente di proposito: l'harness non deve dipendere da DLL accanto a sé,
+	# così può girare da una cartella qualsiasi e testare ONESTAMENTE se è il BUNDLE a essere
+	# autosufficiente. Girando da C:\Rack (dove stanno libRack.dll e il runtime) il test
+	# passerebbe anche con un bundle incompleto: le DLL verrebbero risolte dalla cartella
+	# dell'eseguibile, non dal bundle.
+	VST3TEST_LDFLAGS += -static-libstdc++ -static-libgcc
+endif
+ifdef ARCH_MAC
+	VST3TEST_TARGET := RackVst3Test
+	# Stessa logica: l'harness NON si linka a libRack. Carica il bundle con dlopen e basta,
+	# quindi se il bundle non risolve le proprie dipendenze il test fallisce come farebbe la
+	# DAW, invece di essere salvato dalla libRack.dylib che sta nella cartella corrente.
+	# Objective-C++ perché il test di attached() vuole una NSView vera, come quella che
+	# passa un host: -x deve precedere i sorgenti, quindi sta in una variabile a sé.
+	VST3TEST_FLAGS += -x objective-c++
+	VST3TEST_LDFLAGS += -stdlib=libc++ -framework Cocoa
+endif
+
+$(VST3TEST_TARGET): $(VST3TEST_SOURCES) $(VST3_TARGET)
+	$(CXX) $(CXXFLAGS) $(VST3TEST_FLAGS) -o $@ $(VST3TEST_SOURCES) $(VST3TEST_LDFLAGS)
+
+vst3test: $(VST3TEST_TARGET)
+
+# Packaging: bundle VST3 AUTOSUFFICIENTE e RILOCABILE, pronto da installare in una qualunque
+# cartella VST3 (su macOS ~/Library/Audio/Plug-Ins/VST3). Differenza da `make vst3` (che
+# lascia il bundle in-tree e fa risalire systemDir alla radice del repo): qui copiamo la
+# res/ + Core.json &co. DENTRO Contents/Resources. A runtime findPackagedResources()
+# (rackhost.cpp) li trova nel bundle e punta userDir alla libreria per-utente condivisa con
+# lo standalone. Output in dist/, così il bundle di sviluppo resta pulito e leggero.
+VST3_DIST_BUNDLE := dist/$(VST3_BUNDLE)
+ifdef ARCH_WIN
+	VST3_DIST_ARCH := $(VST3_DIST_BUNDLE)/Contents/x86_64-win
+endif
+ifdef ARCH_MAC
+	VST3_DIST_ARCH := $(VST3_DIST_BUNDLE)/Contents/MacOS
+endif
+VST3_DIST_RES := $(VST3_DIST_BUNDLE)/Contents/Resources
+
+vst3dist: vst3
+	rm -rf "$(VST3_DIST_BUNDLE)"
+	mkdir -p "$(VST3_DIST_ARCH)" "$(VST3_DIST_RES)"
+	# Binari, già assemblati da `make vst3` (Windows: stub + adapter + libRack + runtime
+	# MinGW + nvdaControllerClient; macOS: binario del bundle + libRack.dylib).
+	cp $(VST3_BUNDLE_DIR)/* "$(VST3_DIST_ARCH)/"
+	# systemDir del bundle: tutto ciò che lo standalone tiene nella radice Rack.
+	cp -R res translations "$(VST3_DIST_RES)/"
+	cp Core.json template.vcv cacert.pem "$(VST3_DIST_RES)/"
+ifdef ARCH_MAC
+	cp $(VST3_BUNDLE)/Contents/Info.plist $(VST3_BUNDLE)/Contents/PkgInfo "$(VST3_DIST_BUNDLE)/Contents/"
+	# Copiare i binari ha invalidato la firma del bundle: rifirmiamo la copia distribuita.
+	codesign --force --sign - "$(VST3_DIST_ARCH)/$(notdir $(TARGET))"
+	codesign --force --sign - "$(VST3_DIST_BUNDLE)"
+endif
+	@echo "Bundle pacchettizzato pronto: $(VST3_DIST_BUNDLE)"
+
 # Convenience targets
 
 all: $(TARGET) $(STANDALONE_TARGET)
@@ -174,7 +346,7 @@ valgrind: $(STANDALONE_TARGET)
 	valgrind $(VALGRIND_FLAGS) ./$< -d
 
 clean:
-	rm -rfv build dist $(TARGET) $(STANDALONE_TARGET) *.a
+	rm -rfv build dist $(TARGET) $(STANDALONE_TARGET) $(VST3_BUNDLE) $(VST3_DSYM) $(VST3TEST_TARGET) *.dSYM *.a
 
 # Windows resources
 build/%.res: %.rc
@@ -347,4 +519,4 @@ cleandist:
 
 
 .DEFAULT_GOAL := all
-.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link
+.PHONY: all dep run runr debug clean plugins dist sdk package lipo notarize mac-librack-link vst3 vst3test vst3dist
