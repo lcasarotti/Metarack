@@ -23,6 +23,7 @@
 #include <app/Switch.hpp>
 #include <app/PortWidget.hpp>
 #include <app/CableWidget.hpp>
+#include <app/SvgPanel.hpp>
 #include <app/LedDisplay.hpp>
 #include <app/TipWindow.hpp>
 #include <ui/MenuOverlay.hpp>
@@ -39,6 +40,7 @@
 #include <ui/common.hpp>
 #include <ui/Menu.hpp>
 #include <ui/MenuItem.hpp>
+#include <window/Svg.hpp>
 #include <math.hpp>
 #include <settings.hpp>
 #include <logger.hpp>
@@ -51,6 +53,7 @@
 
 #include <algorithm>
 #include <map>
+#include <regex>
 #include <vector>
 #include <functional>
 #include <string>
@@ -626,6 +629,28 @@ static void refreshParamView(AccessibleWindow* self) {
 // has no model. Reaches the live PortWidget to query its cables. Mirrors the status
 // column the Win32 refreshPortView builds. Only the first cable is reported (parity
 // with Win32; an output can carry several).
+static std::string portSvgId(app::ModuleWidget* mw, app::PortWidget* pw); // fwd
+
+// Human-readable name of the port at a cable's remote end: the module's port name, or the
+// panel SVG placement id when the port has no name of its own. Mirrors remotePortName() in
+// the Win32 AccessibleWindow.cpp.
+static std::string remotePortName(app::PortWidget* remote) {
+	if (!remote || !remote->module || !APP || !APP->scene || !APP->scene->rack)
+		return "";
+	engine::Module* m = remote->module;
+	bool isOut = (remote->type == engine::Port::OUTPUT);
+	engine::PortInfo* info = isOut ? m->getOutputInfo(remote->portId)
+	                              : m->getInputInfo(remote->portId);
+	std::string name = info ? info->getName() : "";
+	if (info && info->name.empty()) {
+		app::ModuleWidget* rmw = APP->scene->rack->getModule(m->id);
+		std::string svgId = portSvgId(rmw, remote);
+		if (!svgId.empty())
+			name = svgId;
+	}
+	return name;
+}
+
 static std::string portStatusString(engine::Module* mod, bool isOutput, int portId) {
 	std::string status = L("free", "libero");
 	if (!mod || !APP || !APP->scene || !APP->scene->rack)
@@ -641,8 +666,15 @@ static std::string portStatusString(engine::Module* mod, bool isOutput, int port
 		return status;
 	app::CableWidget* cw = cables[0];
 	app::PortWidget* remote = isOutput ? cw->inputPort : cw->outputPort;
-	if (remote && remote->module && remote->module->model)
+	if (remote && remote->module && remote->module->model) {
 		status = "→ " + remote->module->model->name;
+		// Append the remote port's own name so the user hears both the module and WHICH of
+		// its ports the cable reaches (e.g. "→ VCF, cutoff CV"). Comma, not colon: it reads
+		// better through the speech synth.
+		std::string rpn = remotePortName(remote);
+		if (!rpn.empty())
+			status += ", " + rpn;
+	}
 	else if (remote)
 		status = L("connected", "connesso");
 	return status;
@@ -1181,6 +1213,63 @@ static void focusPortRow(AccessibleWindow* self, bool isOutput, int portId) {
 	}
 }
 
+// Recover a semantic name for a port the module never named.
+//
+// Some modules only call config(...) and never configInput()/configOutput(), so PortInfo::name
+// stays empty and getName() falls back to a bare "#N" — useless to a screen reader. The panel
+// labels are vector outlines, not machine-readable text. But many plugins place their ports
+// with the SvgHelper convention panelHelper.findNamed("position_input"), so the panel SVG
+// contains a shape whose id IS the port's name and whose bounds-center is exactly the port's
+// center. We recover that id at runtime by matching the PortWidget's center against the
+// panel's NanoSVG shapes.
+//
+// Returns the raw id (per the chosen design — no prettifying), or "" when there is no
+// confidently-semantic match, in which case the caller keeps the "#N" placeholder. Mirrors
+// portSvgId() in the Win32 AccessibleWindow.cpp.
+static std::string portSvgId(app::ModuleWidget* mw, app::PortWidget* pw) {
+	if (!mw || !pw)
+		return "";
+	// getPanel() returns the base widget; both SvgPanel and ThemedSvgPanel keep the
+	// currently-shown document in SvgPanel::svg, so a base-class cast is enough.
+	auto* panel = dynamic_cast<app::SvgPanel*>(mw->getPanel());
+	if (!panel || !panel->svg || !panel->svg->handle)
+		return "";
+
+	// The port's center (in ModuleWidget coords) coincides with the placement shape's
+	// bounds-center (in SVG coords) 1:1, because that is precisely how
+	// createInputCentered(findNamed(...)) positioned it. So the nearest shape within a hair's
+	// tolerance is the placement marker.
+	math::Vec c = pw->box.getCenter();
+	NSVGshape* best = NULL;
+	float bestDist = 4.0f; // squared px; the match is essentially exact
+	for (NSVGshape* sh = panel->svg->handle->shapes; sh; sh = sh->next) {
+		if (!sh->id[0])
+			continue;
+		float cx = (sh->bounds[0] + sh->bounds[2]) * 0.5f;
+		float cy = (sh->bounds[1] + sh->bounds[3]) * 0.5f;
+		float dx = cx - c.x, dy = cy - c.y;
+		float d = dx * dx + dy * dy;
+		if (d < bestDist) {
+			bestDist = d;
+			best = sh;
+		}
+	}
+	if (!best)
+		return "";
+
+	std::string id = best->id;
+	// Reject auto-generated editor ids (Inkscape/Illustrator): path1234, rect5, g12, tspan3,
+	// circle2, … They carry no meaning, so per the chosen design we fall back to "#N" rather
+	// than read them aloud.
+	static const std::regex autoId(
+	    "^(path|rect|g|tspan|text|use|circle|ellipse|line|polyline|polygon|xml|svg)[-_]?[0-9]+$",
+	    std::regex::icase);
+	if (std::regex_match(id, autoId))
+		return "";
+	return id;
+}
+
+
 // Enter on a port: a two-step connection. The first Enter arms pendingCable and drops
 // back to RACK so the user can navigate to the other module's port; the second Enter
 // on a compatible port completes it. Mirrors the Win32 handlePortEnter — in particular
@@ -1205,6 +1294,15 @@ static void onPortEnter(AccessibleWindow* self, bool isOutput) {
 		engine::PortInfo* info = isOutput ? in->currentModule->getOutputInfo(portId)
 		                                  : in->currentModule->getInputInfo(portId);
 		std::string portName = info ? info->getName() : "";
+		// Match the semantic-name fallback used by the port list (see the OUTPUT/INPUT
+		// datasource) so the status message reads the same expressive name.
+		if (info && info->name.empty() && APP && APP->scene && APP->scene->rack) {
+			app::ModuleWidget* pmw = APP->scene->rack->getModule(in->currentModule->id);
+			app::PortWidget* ppw = pmw ? (isOutput ? pmw->getOutput(portId) : pmw->getInput(portId)) : NULL;
+			std::string svgId = portSvgId(pmw, ppw);
+			if (!svgId.empty())
+				portName = svgId;
+		}
 		std::string modName  = in->currentModule->model ? in->currentModule->model->name : "?";
 		setStatus(self, L("Connecting from \"", "Connessione da \"") + portName
 		          + L("\" on ", "\" di ") + modName
@@ -1859,6 +1957,15 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		                                  : in->currentModule->getInputInfo(portId);
 		std::string name = info ? info->getName()
 		                        : (rack::accessible::L("Port ", "Porta ") + std::to_string(portId));
+		// If the module never named this port (getName() gave a bare "#N"), recover a
+		// semantic name from the panel SVG placement id.
+		if (info && info->name.empty() && APP && APP->scene && APP->scene->rack) {
+			app::ModuleWidget* mw = APP->scene->rack->getModule(in->currentModule->id);
+			app::PortWidget* pw = mw ? (isOutput ? mw->getOutput(portId) : mw->getInput(portId)) : NULL;
+			std::string svgId = rack::accessible::portSvgId(mw, pw);
+			if (!svgId.empty())
+				name = svgId;
+		}
 		return [NSString stringWithUTF8String:name.c_str()];
 	}
 
