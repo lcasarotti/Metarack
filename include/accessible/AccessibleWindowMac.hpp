@@ -26,8 +26,20 @@ struct AccessibleWindow {
 	// glfwWindow: the GLFWwindow* of the main Rack window, passed as void* to keep
 	// this header free of GLFW/Cocoa types. The .mm resolves the backing NSWindow
 	// via glfwGetCocoaWindow().
-	static AccessibleWindow* create(void* glfwWindow);
+	//
+	// pluginMode: true when Rack is hosted inside a DAW (the VST3/CLAP adapters) rather
+	// than running standalone. Three things change, all of them because the process
+	// belongs to the host and not to us: we must not touch NSApp's main menu (it is the
+	// DAW's), the panel cannot be a child window of the Rack window (which stays hidden,
+	// and a child window is ordered out with its parent), and nothing calls
+	// drainCommands() for us — there is no Rack run loop — so the layer drives it from
+	// its own timer on the host's run loop.
+	static AccessibleWindow* create(void* glfwWindow, bool pluginMode = false);
 	~AccessibleWindow();
+
+	// Show or hide the accessible layer. The standalone toggles it from the menu bar
+	// (⇧⌘A); the plugin adapters drive it when the host opens or closes the editor.
+	void setVisible(bool show);
 
 	// Run any commands queued from Cocoa event handlers. MUST be called from the
 	// main run loop right after glfwPollEvents() — see Window::step(). Mutations of

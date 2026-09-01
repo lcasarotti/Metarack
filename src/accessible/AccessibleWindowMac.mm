@@ -153,6 +153,21 @@ struct AccessibleWindow::Internal {
 	NSTextField*   statusLabel   = nil; // status line at the bottom of the panel
 	bool           visible       = false;
 
+	// Hosted in a DAW (see AccessibleWindow::create). drainTarget/drainTimer replace the
+	// standalone's run loop: Window::step() calls drainCommands() every frame, but inside
+	// a plugin there is no Rack loop at all, so a timer on the host's run loop does it.
+	bool           pluginMode    = false;
+	id             drainTarget   = nil;  // AXDrainTimerTarget*, retained
+	NSTimer*       drainTimer    = nil;  // retained; invalidated in the destructor
+	id             keyObserver   = nil;  // NSWindowDidBecomeKey token, retained
+	id             keyMonitor    = nil;  // local key monitor token, retained (hosted only)
+
+	// Menu row (hosted only). menuTree is the SAME tree the standalone gives to NSApp,
+	// kept here as pure data and never shown: the row's buttons read their items from it.
+	NSMenu*        menuTree      = nil;  // retained; owned here
+	NSView*        menuRow       = nil;  // owned by the view hierarchy
+	id             menuButtonTarget = nil; // AXMenuButtonTarget*, retained
+
 	// Menu bar (NSApp.mainMenu). menuTarget is the shared action/validation/delegate
 	// object; recentMenu/libraryMenu are rebuilt on open via menuNeedsUpdate:.
 	id           menuTarget  = nil;   // AXMenuTarget*, retained (items hold weak target refs)
@@ -234,6 +249,18 @@ struct AccessibleWindow::Internal {
 	// Mutations queued from Cocoa event handlers, run from drainCommands().
 	std::vector<std::function<void()>> commandQueue;
 };
+
+// Height of the panel's menu row (hosted only) and of the status line at the bottom.
+// Everything between the two belongs to the view currently shown.
+static const CGFloat kMenuRowH = 30;
+static const CGFloat kStatusH  = 22;
+
+// Height available to the list of the current view. Hosted, the menu row takes a strip off
+// the top: the standalone has no row, because its menus live in the system menu bar.
+static CGFloat contentH(AccessibleWindow* self, CGFloat h) {
+	return h - kStatusH - (self->internal->pluginMode ? kMenuRowH : 0);
+}
+
 
 // ── Localization ─────────────────────────────────────────────────────────────
 // Mirror the Win32 layer's T(en, it). macOS strings are UTF-8 std::string throughout
@@ -709,6 +736,34 @@ static void hideAllViews(AccessibleWindow::Internal* in) {
 	[[in->contextTable enclosingScrollView] setHidden:YES];
 }
 
+// The control that backs a view — the one that must hold first responder whenever the
+// panel has key. Twin of the Win32 layer's activeControl().
+static NSView* activeControl(AccessibleWindow::Internal* in) {
+	switch (in->currentView) {
+		case AX_RACK:         return in->rackTable;
+		case AX_LIBRARY:      return in->libraryOutline;
+		case AX_PARAM:        return in->paramTable;
+		case AX_OUTPUT:       return in->outputTable;
+		case AX_INPUT:        return in->inputTable;
+		case AX_CONTEXT_MENU: return in->contextTable;
+	}
+	return in->rackTable;
+}
+
+// Put first responder back on the active view's control. Called whenever the panel becomes
+// the key window: a window that has key but whose first responder is the window itself
+// sends its key events up to NSApp, and inside a DAW that means the host's own key handling
+// swallows them. Standalone this never bites, because nothing else in the process competes
+// for the keyboard.
+static void focusActiveControl(AccessibleWindow* self) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSView* control = activeControl(in);
+	if (!control || !in->panel)
+		return;
+	if ([in->panel firstResponder] != (NSResponder*) control)
+		[in->panel makeFirstResponder:control];
+}
+
 // Show a view's control and focus it. RACK, LIBRARY and PARAM are wired; OUTPUT/INPUT
 // and CONTEXT_MENU still announce a placeholder until their phase lands.
 static void switchTo(AccessibleWindow* self, AXView v) {
@@ -1079,12 +1134,28 @@ static void onRackDelete(AccessibleWindow* self) {
 	}
 }
 
-static void onRackPOI(AccessibleWindow* self, char which) {
-	AXRow* r = focusedRackRow(self);
-	if (!r || r->freeSlot)
+// Jump straight to one of the three module-detail views (F2 / F3 / F4).
+//
+// From RACK it opens the focused module; from a detail view it re-targets the module
+// already open, so the three keys double as a direct jump between the lists without walking
+// the Tab cycle. Mirrors the Win32 switchToDetailView.
+static void switchToDetailView(AccessibleWindow* self, AXView v) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (!APP || !APP->scene || !APP->scene->rack)
 		return;
-	self->internal->currentModule = r->mw->module;
-	switchTo(self, which == 'P' ? AX_PARAM : (which == 'O' ? AX_OUTPUT : AX_INPUT));
+	if (in->currentView == AX_RACK) {
+		AXRow* r = focusedRackRow(self);
+		if (!r || r->freeSlot)   // free slot: no module to open
+			return;
+		in->currentModule = r->mw->module;
+	}
+	else if (in->currentView != AX_PARAM && in->currentView != AX_OUTPUT
+	         && in->currentView != AX_INPUT) {
+		return;
+	}
+	if (!in->currentModule)
+		return;
+	switchTo(self, v);
 }
 
 // ── PARAM key handlers ───────────────────────────────────────────────────────
@@ -1498,6 +1569,126 @@ static std::vector<AXContextItem> buildItemsFromMenu(AccessibleWindow* self, ui:
 	return items;
 }
 
+// ── Menu row (hosted only) ───────────────────────────────────────────────────
+//
+// Dentro una DAW la menu bar di sistema appartiene all'host: non possiamo prendercela (vedi
+// buildMenuTree / create). Il rimedio è portare gli stessi menu DENTRO il pannello, come una
+// riga di pulsanti — File, Modifica, Vista, Motore, Libreria, Aiuto — che aprono il loro
+// contenuto nella lista CONTEXT_MENU, cioè lo stesso elenco leggibile che già serve i menu
+// contestuali dei moduli. Nessuna voce viene riscritta: l'albero è quello di buildMenuTree.
+
+// Convert one level of the menu tree into context-list rows. Twin of buildItemsFromMenu,
+// which does the same job for Rack's own ui::Menu.
+static std::vector<AXContextItem> itemsFromNSMenu(AccessibleWindow* self, NSMenu* menu) {
+	AccessibleWindow::Internal* in = self->internal;
+
+	// I due livelli dinamici si ricostruiscono all'apertura. Nello standalone se ne occupa
+	// menuNeedsUpdate:, il delegate dell'NSMenu; qui il menu non si apre MAI (è solo dato),
+	// quindi quel gancio non scatta e la ricostruzione va fatta a mano.
+	if (menu == in->recentMenu)
+		rebuildRecentMenu(self);
+	else if (menu == in->libraryMenu)
+		rebuildLibraryMenu(self);
+
+	std::vector<AXContextItem> items;
+	for (NSMenuItem* item in [menu itemArray]) {
+		if ([item isSeparatorItem])
+			continue;
+		NSString* title = [item title];
+		if (!title || ![title length])
+			continue;
+		std::string label = [title UTF8String];
+
+		if (NSMenu* sub = [item submenu]) {
+			// Livello annidato: stessa meccanica dei sottomenu di Rack — si costruisce
+			// quando l'utente ci entra, non prima.
+			items.push_back({label + " ▸", [self, sub]() {
+				auto subItems = itemsFromNSMenu(self, sub);
+				self->internal->menuStack.push_back(subItems);
+				self->internal->contextItems = subItems;
+				reloadContextLevel(self);
+			}, true});
+			continue;
+		}
+
+		// Voce non attivabile (il segnaposto "nessuna patch recente", per esempio): non ha
+		// azione. Il suo tag vale 0 come per qualunque NSMenuItem appena creato, quindi
+		// senza questo controllo sarebbe indistinguibile dal comando di indice 0 e
+		// premerla lo eseguirebbe. La mostriamo come riga inerte.
+		if (![item action]) {
+			items.push_back({label, []() {}, false});
+			continue;
+		}
+
+		// Foglia: il tag è l'indice in menuCmds, dove buildMenuTree ha messo azione e
+		// stato della spunta. Leggiamo la spunta ORA, come farebbe validateMenuItem:
+		// prima di mostrare il menu.
+		NSInteger tag = [item tag];
+		if (tag < 0 || tag >= (NSInteger) in->menuCmds.size())
+			continue;
+		auto& checked = in->menuCmds[tag].checked;
+		if (checked && checked())
+			label += " ✓";
+		items.push_back({label, [self, tag]() {
+			cleanupContextMenu(self);
+			menuFire(self, tag);
+		}, false});
+	}
+	return items;
+}
+
+
+// Open one top-level menu as a CONTEXT_MENU level (a button in the row was activated).
+static void openTopMenu(AccessibleWindow* self, int index) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (!in->menuTree)
+		return;
+	NSArray* tops = [in->menuTree itemArray];
+	if (index < 0 || index >= (int) [tops count])
+		return;
+	NSMenu* sub = [[tops objectAtIndex:index] submenu];
+	if (!sub)
+		return;
+
+	// Se un menu è già aperto, il ritorno resta la vista da cui si è partiti: altrimenti
+	// Esc riporterebbe al menu precedente e non si uscirebbe più.
+	AXView back = (in->currentView == AX_CONTEXT_MENU) ? in->previousView : in->currentView;
+	cleanupContextMenu(self);
+	auto items = itemsFromNSMenu(self, sub);
+	if (items.empty())
+		return;
+	in->menuStack.push_back(items);   // livello 0: da qui Esc chiude il menu
+	in->contextItems = items;
+	in->previousView = back;
+	switchTo(self, AX_CONTEXT_MENU);
+}
+
+
+// Move focus to a button of the menu row, wrapping around at both ends.
+static void focusMenuButton(AccessibleWindow* self, int index) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (!in->menuRow)
+		return;
+	NSArray* buttons = [in->menuRow subviews];
+	int count = (int) [buttons count];
+	if (count == 0)
+		return;
+	index = ((index % count) + count) % count;
+	[in->panel makeFirstResponder:[buttons objectAtIndex:index]];
+}
+
+
+// Shift+M from any view: enter the menu row. Twin del "Alt" che su Windows entra nella menu
+// bar vera — lì è il sistema a gestirlo, qui la riga è nostra e la scorciatoia va scritta.
+static void onMenuRowKey(AccessibleWindow* self) {
+	if (!self->internal->menuRow)
+		return;
+	focusMenuButton(self, 0);
+	setStatus(self, L("Menu row. Left and Right to move, Return to open, Escape to leave.",
+	                  "Riga di menù. Sinistra e Destra per spostarti, Invio per aprire, Esc per uscire."));
+}
+
+
 // Standard module context menu (Reset/Randomize/Disconnect/Bypass/Duplicate×2/Delete).
 static void buildModuleContextMenu(AccessibleWindow* self, app::ModuleWidget* mw) {
 	if (!mw || !mw->module)
@@ -1871,10 +2062,18 @@ static bool toggleLearnSelect(AccessibleWindow* self) {
 // ── Show / hide ──────────────────────────────────────────────────────────────
 static void setLayerVisible(AccessibleWindow* self, bool show) {
 	AccessibleWindow::Internal* in = self->internal;
-	settings::accessibleLayerVisible = show;
+	// Hosted, this is not the user's standalone preference: don't overwrite it.
+	if (!in->pluginMode)
+		settings::accessibleLayerVisible = show;
 	if (show) {
 		[in->panel setFrame:[in->rackWindow frame] display:YES];
-		[in->rackWindow addChildWindow:in->panel ordered:NSWindowAbove];
+		// Standalone: the panel is a child window laid over the Rack window, so the two
+		// travel together. Hosted: the Rack window is hidden and must stay hidden, and a
+		// child window is ordered out with its parent — so the panel stands on its own,
+		// as an ordinary window of the host's process. That is also what makes Command+`
+		// (Move focus to next window) a working route back to the DAW.
+		if (!in->pluginMode)
+			[in->rackWindow addChildWindow:in->panel ordered:NSWindowAbove];
 		[in->panel makeKeyAndOrderFront:nil];
 		in->visible = true;
 		// Always rebuild on show so the list reflects any changes made in the GUI.
@@ -1883,12 +2082,116 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		announce(self, L("Accessible interface", "Interfaccia accessibile"));
 	}
 	else {
-		[in->rackWindow removeChildWindow:in->panel];
+		if (!in->pluginMode)
+			[in->rackWindow removeChildWindow:in->panel];
 		[in->panel orderOut:nil];
-		[in->rackWindow makeKeyAndOrderFront:nil];
+		// Standalone: hand key back to Rack. Hosted: Rack's window is hidden, so handing
+		// key to it would strand the user on nothing; AppKit gives the host's own window
+		// back on its own.
+		if (!in->pluginMode)
+			[in->rackWindow makeKeyAndOrderFront:nil];
 		in->visible = false;
 	}
 }
+
+// Keys that work from every view. Returns true when the key was consumed here.
+//
+// The function keys carry NO CHARACTER, which is the whole reason they were chosen: the bare
+// letters they replaced (I/O/P for the three detail views, D for the displays) collided with
+// the lists' first-letter type-ahead — pressing "o" both opened the output list and jumped
+// the rack selection to a module starting with "o". Every letter is now free for type-ahead
+// again. Same map as the Win32 layer, so the two platforms are learnt once.
+//
+// NB su macOS i tasti funzione arrivano all'applicazione solo se in Impostazioni di Sistema
+// è attivo "Usa i tasti F1, F2 ecc. come tasti funzione standard"; altrimenti vanno tenuti
+// premuti insieme a Fn. Su Windows il problema non esiste.
+static bool handleGlobalKey(AccessibleWindow* self, NSEvent* e) {
+	AccessibleWindow::Internal* in = self->internal;
+	NSEventModifierFlags m = [e modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
+	const bool shiftOnly = (m & NSEventModifierFlagShift)
+	                       && !(m & (NSEventModifierFlagCommand | NSEventModifierFlagControl
+	                                 | NSEventModifierFlagOption));
+	const bool noMods = !(m & (NSEventModifierFlagShift | NSEventModifierFlagCommand
+	                           | NSEventModifierFlagControl | NSEventModifierFlagOption));
+
+	if (shiftOnly) {
+		NSString* ch = [[e charactersIgnoringModifiers] lowercaseString];
+		if ([ch isEqualToString:@"m"]) {
+			// Standalone non c'è riga: i menu stanno nella menu bar di sistema, che ha già
+			// le sue vie d'accesso. Lì Shift+M non è nostro e va lasciato passare.
+			if (!in->menuRow)
+				return false;
+			onMenuRowKey(self);
+			return true;
+		}
+		if ([ch isEqualToString:@"d"]) {
+			// Display cliccabili del modulo a fuoco (RACK) o di quello già aperto
+			// (PARAM/OUTPUT/INPUT): onDisplayKey gestisce entrambi i casi.
+			if (in->currentView == AX_CONTEXT_MENU)
+				return false;
+			onDisplayKey(self);
+			return true;
+		}
+	}
+
+	if (noMods) {
+		switch ([e keyCode]) {
+			case 122:   // F1 → manuale, come nella GUI standard di Rack
+				system::openBrowser("https://vcvrack.com/manual/");
+				return true;
+			case 120:   // F2 → ingressi
+				switchToDetailView(self, AX_INPUT);
+				return true;
+			case 99:    // F3 → uscite
+				switchToDetailView(self, AX_OUTPUT);
+				return true;
+			case 118:   // F4 → parametri
+				switchToDetailView(self, AX_PARAM);
+				return true;
+			case 96:    // F5 → menu contestuale specifico del modulo (come Cmd+Shift+M)
+				if (in->currentView == AX_CONTEXT_MENU)
+					return false;
+				onModuleSpecificContextMenuKey(self);
+				return true;
+		}
+	}
+	return false;
+}
+
+
+// True when a key event belongs to the accessible layer rather than to the host.
+//
+// Deliberately narrow, and the narrowness is the safety: it demands that OUR panel is the key
+// window and that the focus sits on one of OUR lists (or on the menu row). Anything else — a
+// modal alert, a text field, the host's own windows — falls through untouched. Cmd, Control
+// and Option combos fall through too: those belong to the host's menus and to VoiceOver,
+// which owns Control+Option.
+static bool panelOwnsKeyEvent(AccessibleWindow* self, NSEvent* e) {
+	AccessibleWindow::Internal* in = self->internal;
+	if (!in->pluginMode || !in->panel || ![in->panel isKeyWindow])
+		return false;
+
+	NSEventModifierFlags m = [e modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
+	if (m & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption))
+		return false;
+
+	NSResponder* fr = [in->panel firstResponder];
+	if (!fr)
+		return false;
+	NSResponder* ours[] = { in->rackTable, in->libraryOutline, in->paramTable,
+	                        in->outputTable, in->inputTable, in->contextTable
+	                      };
+	for (NSResponder* r : ours) {
+		if (r && fr == r)
+			return true;
+	}
+	// La riga di menù: i pulsanti sono figli di menuRow.
+	if (in->menuRow && [fr isKindOfClass:[NSView class]]
+	    && [(NSView*) fr superview] == in->menuRow)
+		return true;
+	return false;
+}
+
 
 } // namespace accessible
 } // namespace rack
@@ -2026,6 +2329,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		[super keyDown:e];
 		return;
 	}
+	if (handleGlobalKey(owner, e))
+		return;
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 	if (m & NSEventModifierFlagCommand) {
 		// Cmd+Enter moves the focused module onto a new row (grows the patch vertically) —
@@ -2081,10 +2386,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		onRackToggleSelect(owner);
 		return;
 	}
-	if ([ch isEqualToString:@"p"]) { onRackPOI(owner, 'P'); return; }
-	if ([ch isEqualToString:@"o"]) { onRackPOI(owner, 'O'); return; }
-	if ([ch isEqualToString:@"i"]) { onRackPOI(owner, 'I'); return; }
-	if ([ch isEqualToString:@"d"]) { onDisplayKey(owner); return; }
+	// Nessuna lettera nuda qui: P/O/I/D sono diventate F4/F3/F2 e Shift+D (vedi
+	// handleGlobalKey), così le lettere tornano al type-ahead della lista.
 	[super keyDown:e];
 }
 @end
@@ -2105,6 +2408,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		[super keyDown:e];
 		return;
 	}
+	if (handleGlobalKey(owner, e))
+		return;
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 	unsigned short kc = e.keyCode;
 	NSString* ch = [[e charactersIgnoringModifiers] lowercaseString];
@@ -2184,6 +2489,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		[super keyDown:e];
 		return;
 	}
+	if (handleGlobalKey(owner, e))
+		return;
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 	if (m & NSEventModifierFlagCommand) {
 		// Cmd+Shift+M opens the module-specific menu; other Cmd-combos go to the menu bar.
@@ -2242,6 +2549,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		[super keyDown:e];
 		return;
 	}
+	if (handleGlobalKey(owner, e))
+		return;
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 	if (m & NSEventModifierFlagCommand) {
 		[super keyDown:e];
@@ -2270,6 +2579,8 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 		[super keyDown:e];
 		return;
 	}
+	if (handleGlobalKey(owner, e))
+		return;
 	NSEventModifierFlags m = e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 	if (m & NSEventModifierFlagCommand) {   // Cmd-combos belong to the menu bar
 		[super keyDown:e];
@@ -2322,6 +2633,107 @@ static void setLayerVisible(AccessibleWindow* self, bool show) {
 // ─────────────────────────────────────────────────────────────────────────────
 // C++ lifecycle (instantiates the Objective-C classes above)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// The accessible panel's window class.
+//
+// VoiceOver's window chooser (VO+F2 F2) switches windows through the accessibility API, and
+// AppKit's default raise only ORDERS THE WINDOW FRONT — it does not make it the key window.
+// Standalone that is invisible: nothing else in the process wants the keyboard, so whoever
+// is in front effectively has it. Inside a DAW it splits the two apart, and the split is
+// exactly what the user feels: VoiceOver reads the MetaRack panel while every keystroke
+// still goes to the host, which kept key. For this panel, being in front and being usable
+// are the same thing, so raising it must also focus it.
+@interface AXPanelWindow : NSWindow
+@end
+
+@implementation AXPanelWindow
+
+- (BOOL)accessibilityPerformRaise {
+	[self makeKeyAndOrderFront:nil];
+	return YES;
+}
+
+@end
+
+
+// A button of the panel's menu row (hosted only).
+//
+// Due ragioni per una sottoclasse invece di un NSButton nudo. La prima: un NSButton accetta
+// il primo responder SOLO se "Accesso completo da tastiera" è attivo nel sistema, e non
+// possiamo far dipendere l'unica via ai menu da un'impostazione che l'utente potrebbe non
+// avere. La seconda: dentro la riga le frecce devono spostarsi tra i pulsanti, come in una
+// menu bar vera, non far scorrere altro.
+@interface AXMenuButton : NSButton {
+@public
+	rack::accessible::AccessibleWindow* owner;
+}
+@end
+
+@implementation AXMenuButton
+
+- (BOOL)acceptsFirstResponder {
+	return YES;
+}
+
+- (void)keyDown:(NSEvent*)e {
+	using namespace rack::accessible;
+	if (!owner) {
+		[super keyDown:e];
+		return;
+	}
+	unsigned short kc = e.keyCode;
+	if (kc == 123) { focusMenuButton(owner, (int)[self tag] - 1); return; }  // Left
+	if (kc == 124) { focusMenuButton(owner, (int)[self tag] + 1); return; }  // Right
+	if (kc == 36 || kc == 76 || kc == 49) {                                  // Return / Enter / Space
+		[self performClick:nil];
+		return;
+	}
+	if (kc == 53) {                                                          // Escape → back
+		focusActiveControl(owner);
+		return;
+	}
+	[super keyDown:e];
+}
+
+@end
+
+
+// Action target of the menu row's buttons: the tag is the index of the top-level menu.
+@interface AXMenuButtonTarget : NSObject {
+@public
+	rack::accessible::AccessibleWindow* owner;
+}
+- (void)pressed:(id)sender;
+@end
+
+@implementation AXMenuButtonTarget
+- (void)pressed:(id)sender {
+	using namespace rack::accessible;
+	if (owner)
+		openTopMenu(owner, (int)[(NSButton*) sender tag]);
+}
+@end
+
+
+// Timer target for the hosted (plugin) case. The standalone drains the command queue from
+// Window::step(); inside a DAW there is no Rack run loop, so this fires on the host's run
+// loop instead. Same contract as the standalone's per-frame call: it runs on the main
+// thread, where the adapter has already made this instance's Context current.
+@interface AXDrainTimerTarget : NSObject {
+@public
+	rack::accessible::AccessibleWindow* owner;
+}
+- (void)tick:(NSTimer*)timer;
+@end
+
+@implementation AXDrainTimerTarget
+- (void)tick:(NSTimer*)timer {
+	(void) timer;
+	if (owner)
+		owner->drainCommands();
+}
+@end
+
 
 namespace rack {
 namespace accessible {
@@ -2447,12 +2859,12 @@ static void rebuildLibraryMenu(AccessibleWindow* self) {
 // and tags the view so the key handlers know which side they are on.
 static NSTableView* buildPortTable(AccessibleWindow* self, NSView* content,
                                    id controller, bool isOutput, CGFloat w, CGFloat h) {
-	NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, contentH(self, h))];
 	[scroll setHasVerticalScroller:YES];
 	[scroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 	[scroll setHidden:YES];
 
-	RackAXPortTableView* t = [[RackAXPortTableView alloc] initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	RackAXPortTableView* t = [[RackAXPortTableView alloc] initWithFrame:NSMakeRect(0, 0, w, contentH(self, h))];
 	t->owner = self;
 	t->isOutput = isOutput ? YES : NO;
 	CGFloat cw = w > 80 ? (w - 40) / 2 : 400;
@@ -2482,7 +2894,16 @@ static NSTableView* buildPortTable(AccessibleWindow* self, NSView* content,
 }
 
 // ── Menu bar ─────────────────────────────────────────────────────────────────
-static void buildMenuBar(AccessibleWindow* self) {
+// Build the whole menu tree. UNICA FONTE DI VERITÀ per le due interfacce: lo standalone lo
+// consegna a NSApp come menu bar vera, il plugin lo tiene come DATO e non lo mostra mai —
+// la riga di pulsanti del pannello legge da qui (vedi itemsFromNSMenu / openTopMenu). Così
+// aggiungere una voce la fa comparire in entrambe, e non possono divergere.
+//
+// `hosted` = dentro una DAW. Cambia pochissimo, e solo dove una voce sarebbe una trappola
+// invece che un comando; il resto è identico apposta.
+//
+// Il chiamante possiede il menu restituito.
+static NSMenu* buildMenuTree(AccessibleWindow* self, bool hosted) {
 	NSMenu* mainMenu = [[NSMenu alloc] init];
 
 	auto fpreset = [&](NSMenu* m, const std::string& label, float* s, float v) {
@@ -2490,22 +2911,26 @@ static void buildMenuBar(AccessibleWindow* self) {
 	};
 
 	// ── Application menu (first; its title is replaced by the app name) ─────────
-	NSMenuItem* appItem = [[NSMenuItem alloc] init];
-	[mainMenu addItem:appItem];
-	[appItem release];
-	NSMenu* appMenu = [[NSMenu alloc] init];
-	[appItem setSubmenu:appMenu];
-	[appMenu release];
-	addCmd(self, appMenu, "VCVRack.com", []() {
-		system::openBrowser("https://vcvrack.com/");
-	});
-	axSep(appMenu);
-	addCmd(self, appMenu, L("Hide Rack", "Nascondi Rack"), []() {
-		[NSApp hide:nil];
-	}, nullptr, @"h");
-	addCmd(self, appMenu, L("Quit Rack", "Esci da Rack"), [self]() {
-		pushCommand(self, []() { APP->window->close(); });
-	}, nullptr, @"q");
+	// Hosted there is no application menu to speak of: l'applicazione è la DAW, e
+	// "Nascondi Rack" / "Esci da Rack" agirebbero su di lei.
+	if (!hosted) {
+		NSMenuItem* appItem = [[NSMenuItem alloc] init];
+		[mainMenu addItem:appItem];
+		[appItem release];
+		NSMenu* appMenu = [[NSMenu alloc] init];
+		[appItem setSubmenu:appMenu];
+		[appMenu release];
+		addCmd(self, appMenu, "VCVRack.com", []() {
+			system::openBrowser("https://vcvrack.com/");
+		});
+		axSep(appMenu);
+		addCmd(self, appMenu, L("Hide Rack", "Nascondi Rack"), []() {
+			[NSApp hide:nil];
+		}, nullptr, @"h");
+		addCmd(self, appMenu, L("Quit Rack", "Esci da Rack"), [self]() {
+			pushCommand(self, []() { APP->window->close(); });
+		}, nullptr, @"q");
+	}
 
 	// ── File ────────────────────────────────────────────────────────────────────
 	NSMenu* file = addSub(mainMenu, L("File", "File"));
@@ -2596,13 +3021,18 @@ static void buildMenuBar(AccessibleWindow* self) {
 
 	// ── View ────────────────────────────────────────────────────────────────────
 	NSMenu* view = addSub(mainMenu, L("View", "Vista"));
-	addCmd(self, view, L("Toggle accessible interface", "Mostra/nascondi interfaccia accessibile"), [self]() {
-		setLayerVisible(self, !self->internal->visible);
-	}, nullptr, @"a", NSEventModifierFlagCommand | NSEventModifierFlagShift);
-	axSep(view);
-	addCmd(self, view, L("Fullscreen", "Schermo intero"), [self]() {
-		pushCommand(self, []() { APP->window->setFullScreen(!APP->window->isFullScreen()); });
-	}, []() { return APP->window->isFullScreen(); });
+	// Hosted queste due sarebbero trappole, non comandi: nascondere il layer toglierebbe
+	// l'UNICA interfaccia che il plugin ha (non resta una menu bar da cui riaprirla), e lo
+	// schermo intero agirebbe sulla finestra GL che il plugin tiene nascosta.
+	if (!hosted) {
+		addCmd(self, view, L("Toggle accessible interface", "Mostra/nascondi interfaccia accessibile"), [self]() {
+			setLayerVisible(self, !self->internal->visible);
+		}, nullptr, @"a", NSEventModifierFlagCommand | NSEventModifierFlagShift);
+		axSep(view);
+		addCmd(self, view, L("Fullscreen", "Schermo intero"), [self]() {
+			pushCommand(self, []() { APP->window->setFullScreen(!APP->window->isFullScreen()); });
+		}, []() { return APP->window->isFullScreen(); });
+	}
 
 	NSMenu* zoom = addSub(view, "Zoom");
 	struct { const char* l; float v; } zooms[] = {
@@ -2747,11 +3177,18 @@ static void buildMenuBar(AccessibleWindow* self) {
 		std::thread([]() { library::checkAppUpdate(); }).detach();
 	});
 
+	return mainMenu;
+}
+
+
+// Standalone: l'albero diventa la menu bar dell'applicazione.
+static void buildMenuBar(AccessibleWindow* self) {
+	NSMenu* mainMenu = buildMenuTree(self, false);
 	[NSApp setMainMenu:mainMenu];
 	[mainMenu release];
 }
 
-AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
+AccessibleWindow* AccessibleWindow::create(void* glfwWindow, bool pluginMode) {
 	if (instance)
 		return instance;
 
@@ -2765,15 +3202,18 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	AccessibleWindow* self = new AccessibleWindow();
 	self->internal = new Internal();
 	self->internal->rackWindow = rackWindow;
+	self->internal->pluginMode = pluginMode;
 
 	NSRect frame = [rackWindow frame];
 	CGFloat w = frame.size.width, h = frame.size.height;
-	NSWindow* panel = [[NSWindow alloc]
+	NSWindow* panel = [[AXPanelWindow alloc]
 	    initWithContentRect:NSMakeRect(0, 0, w, h)
 	              styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
 	                backing:NSBackingStoreBuffered
 	                  defer:NO];
-	[panel setTitle:@"Rack"];
+	// Hosted, this window sits among the DAW's own in Command+` and in its Window menu, so
+	// it says which product it is; standalone it is the Rack window's layer.
+	[panel setTitle:pluginMode ? @"MetaRack" : @"Rack"];
 	[panel setReleasedWhenClosed:NO];
 	NSView* content = [panel contentView];
 	[content setAutoresizesSubviews:YES];
@@ -2796,12 +3236,12 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	self->internal->statusLabel = status;
 
 	// RACK table inside a scroll view, filling the area above the status line.
-	NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, contentH(self, h))];
 	[scroll setHasVerticalScroller:YES];
 	[scroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 
 	RackAXTableView* table = [[RackAXTableView alloc]
-	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	    initWithFrame:NSMakeRect(0, 0, w, contentH(self, h))];
 	table->owner = self;
 	NSTableColumn* col = [[NSTableColumn alloc] initWithIdentifier:@"name"];
 	[col setWidth:w > 80 ? w - 40 : 800];
@@ -2821,13 +3261,13 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	self->internal->rackTable = table;
 
 	// LIBRARY outline, same geometry as the RACK table but hidden until switched to.
-	NSScrollView* libScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	NSScrollView* libScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, contentH(self, h))];
 	[libScroll setHasVerticalScroller:YES];
 	[libScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 	[libScroll setHidden:YES];
 
 	RackAXOutlineView* outline = [[RackAXOutlineView alloc]
-	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	    initWithFrame:NSMakeRect(0, 0, w, contentH(self, h))];
 	outline->owner = self;
 	NSTableColumn* lcol = [[NSTableColumn alloc] initWithIdentifier:@"lib"];
 	[lcol setWidth:w > 80 ? w - 40 : 800];
@@ -2847,13 +3287,13 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	self->internal->libraryOutline = outline;
 
 	// PARAM table: two columns (name, value), same geometry, hidden until switched to.
-	NSScrollView* paramScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	NSScrollView* paramScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, contentH(self, h))];
 	[paramScroll setHasVerticalScroller:YES];
 	[paramScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 	[paramScroll setHidden:YES];
 
 	RackAXParamTableView* paramTable = [[RackAXParamTableView alloc]
-	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	    initWithFrame:NSMakeRect(0, 0, w, contentH(self, h))];
 	paramTable->owner = self;
 	CGFloat pcw = w > 80 ? (w - 40) / 2 : 400;
 	NSTableColumn* pcName = [[NSTableColumn alloc] initWithIdentifier:@"pname"];
@@ -2885,13 +3325,13 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 	self->internal->inputTable  = buildPortTable(self, content, controller, false, w, h);
 
 	// CONTEXT_MENU table: single column, same geometry, hidden until switched to.
-	NSScrollView* ctxScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, h - 22)];
+	NSScrollView* ctxScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 22, w, contentH(self, h))];
 	[ctxScroll setHasVerticalScroller:YES];
 	[ctxScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 	[ctxScroll setHidden:YES];
 
 	RackAXContextTableView* ctxTable = [[RackAXContextTableView alloc]
-	    initWithFrame:NSMakeRect(0, 0, w, h - 22)];
+	    initWithFrame:NSMakeRect(0, 0, w, contentH(self, h))];
 	ctxTable->owner = self;
 	NSTableColumn* ctxCol = [[NSTableColumn alloc] initWithIdentifier:@"ctx"];
 	[ctxCol setWidth:w > 80 ? w - 40 : 800];
@@ -2912,24 +3352,170 @@ AccessibleWindow* AccessibleWindow::create(void* glfwWindow) {
 
 	instance = self;
 
-	// Native menu bar (App/File/Edit/View/Engine/Library/Help). Its key equivalents
-	// provide the global shortcuts (⌘N/⌘S/⌘Z…) and the toggle (⇧⌘A), so no event
-	// monitor is needed. GLFW left NSApp without a menu (GLFW_COCOA_MENUBAR = FALSE).
-	AXMenuTarget* menuTarget = [[AXMenuTarget alloc] init];
-	menuTarget->owner = self;
-	self->internal->menuTarget = menuTarget;
-	buildMenuBar(self);
+	if (!pluginMode) {
+		// Native menu bar (App/File/Edit/View/Engine/Library/Help). Its key equivalents
+		// provide the global shortcuts (⌘N/⌘S/⌘Z…) and the toggle (⇧⌘A), so no event
+		// monitor is needed. GLFW left NSApp without a menu (GLFW_COCOA_MENUBAR = FALSE).
+		//
+		// Hosted, NSApp's main menu belongs to the DAW: replacing it would take the host's
+		// own menus away, so there the same tree becomes the panel's menu row (below).
+		AXMenuTarget* menuTarget = [[AXMenuTarget alloc] init];
+		menuTarget->owner = self;
+		self->internal->menuTarget = menuTarget;
+		buildMenuBar(self);
 
-	if (settings::accessibleLayerVisible)
-		setLayerVisible(self, true);
+		if (settings::accessibleLayerVisible)
+			setLayerVisible(self, true);
+	}
+	else {
+		// ── Menu row ────────────────────────────────────────────────────────────────
+		// La menu bar di sistema è della DAW, quindi gli stessi menu entrano nel pannello
+		// come riga di pulsanti. L'albero è quello che lo standalone darebbe a NSApp: qui
+		// non viene mai mostrato come NSMenu, lo leggono i pulsanti (vedi itemsFromNSMenu).
+		AXMenuTarget* menuTarget = [[AXMenuTarget alloc] init];
+		menuTarget->owner = self;
+		self->internal->menuTarget = menuTarget;
+		self->internal->menuTree = buildMenuTree(self, true);
 
-	INFO("Accessible (macOS) window created");
+		AXMenuButtonTarget* buttonTarget = [[AXMenuButtonTarget alloc] init];
+		buttonTarget->owner = self;
+		self->internal->menuButtonTarget = buttonTarget;
+
+		NSView* row = [[NSView alloc] initWithFrame:NSMakeRect(0, h - kMenuRowH, w, kMenuRowH)];
+		[row setAutoresizingMask:(NSViewWidthSizable | NSViewMinYMargin)];
+		CGFloat bx = 4;
+		int topIndex = 0;
+		for (NSMenuItem* top in [self->internal->menuTree itemArray]) {
+			NSString* title = [top title];
+			if (![top submenu] || !title || ![title length]) {
+				topIndex++;
+				continue;
+			}
+			AXMenuButton* b = [[AXMenuButton alloc]
+			    initWithFrame:NSMakeRect(bx, 3, 100, kMenuRowH - 6)];
+			b->owner = self;
+			[b setTitle:title];
+			[b setBezelStyle:NSBezelStyleRounded];
+			[b setTarget:buttonTarget];
+			[b setAction:@selector(pressed:)];
+			// Il tag è l'indice NEL MENU TREE, non nella riga: openTopMenu ci indicizza
+			// dentro, quindi deve contare anche le voci eventualmente saltate.
+			[b setTag:topIndex];
+			[b sizeToFit];
+			NSRect bf = [b frame];
+			bf.origin = NSMakePoint(bx, 3);
+			bf.size.height = kMenuRowH - 6;
+			[b setFrame:bf];
+			[row addSubview:b];
+			bx += bf.size.width + 4;
+			[b release];
+			topIndex++;
+		}
+		// In fondo alla lista dei subview, quindi in TESTA all'ordine con cui VoiceOver
+		// percorre il pannello: la riga di menù si legge per prima, come una menu bar.
+		[content addSubview:row positioned:NSWindowBelow relativeTo:nil];
+		self->internal->menuRow = row;
+		INFO("Accessible (macOS): menu row with %d buttons", (int)[[row subviews] count]);
+		[row release];
+
+		// ── I nostri tasti sono NOSTRI ───────────────────────────────────────────────
+		// Dentro una DAW ogni evento di tastiera passa da NSApp PRIMA di raggiungere una
+		// finestra, e l'host lega lì le proprie azioni: Reaper si prende F2 ("rename FX
+		// instance") senza che il pannello lo veda mai. Un local monitor gira in quello
+		// stesso stadio, e arrivando prima può consegnare l'evento direttamente alla nostra
+		// catena di responder e restituire nil, così l'host non ha occasione di vederlo.
+		//
+		// Non è un dirottamento indiscriminato: panelOwnsKeyEvent() pretende che il
+		// pannello sia la finestra chiave e che il fuoco sia su una delle nostre liste.
+		// Fuori da quelle condizioni l'evento prosegue intatto verso l'host.
+		self->internal->keyMonitor =
+		    [[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+		              handler:^NSEvent* (NSEvent * e) {
+			if (!panelOwnsKeyEvent(self, e))
+				return e;
+			// I tasti funzione sono quelli che gli host rivendicano più spesso: lasciarne
+			// traccia rende evidente, dal log, chi li ha avuti.
+			unsigned short kc = [e keyCode];
+			if (kc == 122 || kc == 120 || kc == 99 || kc == 118 || kc == 96)
+				INFO("Accessible (macOS): tasto funzione (keyCode %d) intercettato per MetaRack", (int) kc);
+			[[self->internal->panel firstResponder] keyDown:e];
+			return nil;   // consumato: l'host non lo vedrà
+		}] retain];
+
+		// No Rack run loop here: keep the command queue moving from the host's.
+		AXDrainTimerTarget* drainTarget = [[AXDrainTimerTarget alloc] init];
+		drainTarget->owner = self;
+		self->internal->drainTarget = drainTarget;
+		self->internal->drainTimer = [[NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
+		                              target:drainTarget
+		                              selector:@selector(tick:)
+		                              userInfo:nil
+		                              repeats:YES] retain];
+		// The adapter decides when to show the layer (the host opening or closing its
+		// editor), so the standalone's remembered visibility does not apply.
+
+		// Ogni volta che il pannello torna a essere finestra chiave — con lo switcher di
+		// VoiceOver, con Command+`, o perché l'utente ci clicca — il first responder deve
+		// tornare sul controllo della vista attiva. AppKit non lo garantisce dopo un giro
+		// resign/become, e un pannello con la chiave ma senza first responder manda i tasti
+		// a NSApp, cioè alla DAW.
+		self->internal->keyObserver =
+		    [[[NSNotificationCenter defaultCenter]
+		      addObserverForName:NSWindowDidBecomeKeyNotification
+		      object:panel queue:nil
+		      usingBlock:^(NSNotification * n) {
+			(void) n;
+			focusActiveControl(self);
+		}] retain];
+	}
+
+	INFO("Accessible (macOS) window created (pluginMode=%d)", (int) pluginMode);
 	return self;
+}
+
+
+void AccessibleWindow::setVisible(bool show) {
+	if (internal)
+		setLayerVisible(this, show);
 }
 
 AccessibleWindow::~AccessibleWindow() {
 	if (internal) {
-		[NSApp setMainMenu:nil];
+		// Stop the hosted drain timer before anything it could touch goes away.
+		if (internal->drainTimer) {
+			[internal->drainTimer invalidate];
+			[internal->drainTimer release];
+			internal->drainTimer = nil;
+		}
+		if (internal->drainTarget) {
+			((AXDrainTimerTarget*) internal->drainTarget)->owner = nullptr;
+			[(id) internal->drainTarget release];
+			internal->drainTarget = nil;
+		}
+		if (internal->menuButtonTarget) {
+			((AXMenuButtonTarget*) internal->menuButtonTarget)->owner = nullptr;
+			[(id) internal->menuButtonTarget release];
+			internal->menuButtonTarget = nil;
+		}
+		if (internal->menuTree) {
+			[internal->menuTree release];
+			internal->menuTree = nil;
+		}
+		// Monitor e observer sopravviverebbero al pannello che osservano.
+		if (internal->keyMonitor) {
+			[NSEvent removeMonitor:internal->keyMonitor];
+			[(id) internal->keyMonitor release];
+			internal->keyMonitor = nil;
+		}
+		if (internal->keyObserver) {
+			[[NSNotificationCenter defaultCenter] removeObserver:internal->keyObserver];
+			[(id) internal->keyObserver release];
+			internal->keyObserver = nil;
+		}
+		// Hosted, the main menu is the DAW's: clearing it would leave the host without its
+		// menus for the rest of the session.
+		if (!internal->pluginMode)
+			[NSApp setMainMenu:nil];
 		cleanupContextMenu(this);   // free any detached appendContextMenu() menus
 
 		// Detach the datasource/delegate from every view before releasing the controller.
